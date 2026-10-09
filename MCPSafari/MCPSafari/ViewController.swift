@@ -9,7 +9,7 @@ import Cocoa
 import SafariServices
 import WebKit
 
-nonisolated let extensionBundleIdentifier = "com.epistates.MCPSafari.Extension"
+nonisolated let extensionBundleIdentifier = "app.eventra.MCPSafari.Extension"
 nonisolated private let accessibilitySettingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
 
 class ViewController: NSViewController, WKNavigationDelegate, WKScriptMessageHandler {

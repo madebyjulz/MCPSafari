@@ -16,14 +16,14 @@
 			containerPortal = 9DC62EBF2F717081006535B1 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = 9DC62EC62F717081006535B1;
-			remoteInfo = "MCPSafari";
+			remoteInfo = MCPSafari;
 		};
 		9DC62EEC2F717081006535B1 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 9DC62EBF2F717081006535B1 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = 9DC62EC62F717081006535B1;
-			remoteInfo = "MCPSafari";
+			remoteInfo = MCPSafari;
 		};
 		9DC62EF92F717081006535B1 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -49,9 +49,9 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		9DC62EC72F717081006535B1 /* MCPSafari.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "MCPSafari.app"; sourceTree = BUILT_PRODUCTS_DIR; };
-		9DC62EE12F717081006535B1 /* MCPSafariTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "MCPSafariTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
-		9DC62EEB2F717081006535B1 /* MCPSafariUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "MCPSafariUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		9DC62EC72F717081006535B1 /* MCPSafari.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MCPSafari.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		9DC62EE12F717081006535B1 /* MCPSafariTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MCPSafariTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		9DC62EEB2F717081006535B1 /* MCPSafariUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MCPSafariUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		9DC62EF72F717081006535B1 /* MCPSafari Extension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "MCPSafari Extension.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -68,17 +68,17 @@
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		9DC62EC92F717081006535B1 /* MCPSafari */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = "MCPSafari";
+			path = MCPSafari;
 			sourceTree = "<group>";
 		};
 		9DC62EE42F717081006535B1 /* MCPSafariTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = "MCPSafariTests";
+			path = MCPSafariTests;
 			sourceTree = "<group>";
 		};
 		9DC62EEE2F717081006535B1 /* MCPSafariUITests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = "MCPSafariUITests";
+			path = MCPSafariUITests;
 			sourceTree = "<group>";
 		};
 		9DC62EFB2F717081006535B1 /* MCPSafari Extension */ = {
@@ -170,10 +170,10 @@
 			fileSystemSynchronizedGroups = (
 				9DC62EC92F717081006535B1 /* MCPSafari */,
 			);
-			name = "MCPSafari";
+			name = MCPSafari;
 			packageProductDependencies = (
 			);
-			productName = "MCPSafari";
+			productName = MCPSafari;
 			productReference = 9DC62EC72F717081006535B1 /* MCPSafari.app */;
 			productType = "com.apple.product-type.application";
 		};
@@ -193,10 +193,10 @@
 			fileSystemSynchronizedGroups = (
 				9DC62EE42F717081006535B1 /* MCPSafariTests */,
 			);
-			name = "MCPSafariTests";
+			name = MCPSafariTests;
 			packageProductDependencies = (
 			);
-			productName = "MCPSafariTests";
+			productName = MCPSafariTests;
 			productReference = 9DC62EE12F717081006535B1 /* MCPSafariTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
@@ -216,10 +216,10 @@
 			fileSystemSynchronizedGroups = (
 				9DC62EEE2F717081006535B1 /* MCPSafariUITests */,
 			);
-			name = "MCPSafariUITests";
+			name = MCPSafariUITests;
 			packageProductDependencies = (
 			);
-			productName = "MCPSafariUITests";
+			productName = MCPSafariUITests;
 			productReference = 9DC62EEB2F717081006535B1 /* MCPSafariUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
@@ -325,37 +325,6 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
-/* Begin PBXSourcesBuildPhase section */
-		9DC62EC32F717081006535B1 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		9DC62EDD2F717081006535B1 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		9DC62EE72F717081006535B1 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		9DC62EF32F717081006535B1 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXSourcesBuildPhase section */
-
 /* Begin PBXShellScriptBuildPhase section */
 		4D53A1E02F90000000000001 /* Bundle extension scripts */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -399,6 +368,37 @@
 		};
 /* End PBXShellScriptBuildPhase section */
 
+/* Begin PBXSourcesBuildPhase section */
+		9DC62EC32F717081006535B1 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		9DC62EDD2F717081006535B1 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		9DC62EE72F717081006535B1 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		9DC62EF32F717081006535B1 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
 /* Begin PBXTargetDependency section */
 		9DC62EE32F717081006535B1 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
@@ -421,13 +421,13 @@
 		9DC62F122F717081006535B1 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				CODE_SIGN_ENTITLEMENTS = "MCPSafari Extension/MCPSafari Extension.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 31;
 				DEVELOPMENT_TEAM = 3G4T4PCPZJ;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "MCPSafari Extension/Info.plist";
@@ -444,7 +444,7 @@
 					"-framework",
 					SafariServices,
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = "com.epistates.MCPSafari.Extension";
+				PRODUCT_BUNDLE_IDENTIFIER = app.eventra.MCPSafari.Extension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -458,13 +458,13 @@
 		9DC62F132F717081006535B1 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				CODE_SIGN_ENTITLEMENTS = "MCPSafari Extension/MCPSafari Extension.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 31;
 				DEVELOPMENT_TEAM = 3G4T4PCPZJ;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "MCPSafari Extension/Info.plist";
@@ -481,7 +481,7 @@
 					"-framework",
 					SafariServices,
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = "com.epistates.MCPSafari.Extension";
+				PRODUCT_BUNDLE_IDENTIFIER = app.eventra.MCPSafari.Extension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -615,19 +615,19 @@
 		9DC62F182F717081006535B1 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 31;
-				DEVELOPMENT_TEAM = 3G4T4PCPZJ;
+				DEVELOPMENT_TEAM = HT7JW73LR4;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "MCPSafari";
+				INFOPLIST_KEY_CFBundleDisplayName = MCPSafari;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSMainStoryboardFile = Main;
 				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
@@ -642,7 +642,7 @@
 					"-framework",
 					WebKit,
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = "com.epistates.MCPSafari";
+				PRODUCT_BUNDLE_IDENTIFIER = app.eventra.MCPSafari;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -657,19 +657,19 @@
 		9DC62F192F717081006535B1 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 31;
-				DEVELOPMENT_TEAM = 3G4T4PCPZJ;
+				DEVELOPMENT_TEAM = HT7JW73LR4;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "MCPSafari";
+				INFOPLIST_KEY_CFBundleDisplayName = MCPSafari;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSMainStoryboardFile = Main;
 				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
@@ -684,7 +684,7 @@
 					"-framework",
 					WebKit,
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = "com.epistates.MCPSafari";
+				PRODUCT_BUNDLE_IDENTIFIER = app.eventra.MCPSafari;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -706,7 +706,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MARKETING_VERSION = 0.3.2;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.epistates.MCPSafariTests";
+				PRODUCT_BUNDLE_IDENTIFIER = app.eventra.MCPSafariTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -727,7 +727,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MARKETING_VERSION = 0.3.2;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.epistates.MCPSafariTests";
+				PRODUCT_BUNDLE_IDENTIFIER = app.eventra.MCPSafariTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -746,14 +746,14 @@
 				DEVELOPMENT_TEAM = 3G4T4PCPZJ;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 0.3.2;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.epistates.MCPSafariUITests";
+				PRODUCT_BUNDLE_IDENTIFIER = app.eventra.MCPSafariUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 6.0;
-				TEST_TARGET_NAME = "MCPSafari";
+				TEST_TARGET_NAME = MCPSafari;
 			};
 			name = Debug;
 		};
@@ -765,14 +765,14 @@
 				DEVELOPMENT_TEAM = 3G4T4PCPZJ;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 0.3.2;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.epistates.MCPSafariUITests";
+				PRODUCT_BUNDLE_IDENTIFIER = app.eventra.MCPSafariUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 6.0;
-				TEST_TARGET_NAME = "MCPSafari";
+				TEST_TARGET_NAME = MCPSafari;
 			};
 			name = Release;
 		};

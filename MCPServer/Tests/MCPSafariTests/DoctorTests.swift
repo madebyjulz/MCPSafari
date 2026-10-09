@@ -14,7 +14,7 @@ struct DoctorTests {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
 
         let app = root.appendingPathComponent("MCPSafari.app")
-        try writeBundle(at: app, identifier: "com.epistates.MCPSafari")
+        try writeBundle(at: app, identifier: "app.eventra.MCPSafari")
         try writeBundle(
             at: app.appendingPathComponent("Contents/PlugIns/MCPSafari Extension.appex"),
             identifier: MCPSafariProduct.extensionBundleIdentifier
@@ -53,7 +53,7 @@ struct DoctorTests {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
 
         let app = root.appendingPathComponent("MCPSafari.app")
-        try writeBundle(at: app, identifier: "com.epistates.MCPSafari", version: "0.2.8")
+        try writeBundle(at: app, identifier: "app.eventra.MCPSafari", version: "0.2.8")
         try writeBundle(
             at: app.appendingPathComponent("Contents/PlugIns/MCPSafari Extension.appex"),
             identifier: MCPSafariProduct.extensionBundleIdentifier
@@ -222,7 +222,7 @@ struct DoctorTests {
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let appURL = root.appendingPathComponent("MCPSafari.app")
-        try writeBundle(at: appURL, identifier: "com.epistates.MCPSafari")
+        try writeBundle(at: appURL, identifier: "app.eventra.MCPSafari")
         let installedExtension = appURL
             .appendingPathComponent("Contents/PlugIns")
             .appendingPathComponent("MCPSafari Extension.appex")
@@ -266,7 +266,7 @@ struct DoctorTests {
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let appURL = root.appendingPathComponent("MCPSafari.app")
-        try writeBundle(at: appURL, identifier: "com.epistates.MCPSafari")
+        try writeBundle(at: appURL, identifier: "app.eventra.MCPSafari")
         let installedExtension = appURL
             .appendingPathComponent("Contents/PlugIns")
             .appendingPathComponent("MCPSafari Extension.appex")
@@ -345,7 +345,7 @@ struct DoctorTests {
     /// The bundle path is the tail of the line and contains a space, so anything
     /// that splits on whitespace truncates it to "/Applications/MCPSafari.app/Contents/PlugIns/MCPSafari".
     @Test func theRegisteredPathSurvivesTheSpaceInItsName() {
-        let output = "     com.epistates.MCPSafari.Extension(0.3.2)\t8AC12B3C-1B4B\t2026-09-16 23:56:34 +0000"
+        let output = "     app.eventra.MCPSafari.Extension(0.3.2)\t8AC12B3C-1B4B\t2026-09-16 23:56:34 +0000"
             + "\t/Applications/MCPSafari.app/Contents/PlugIns/MCPSafari Extension.appex\n (1 plug-in)\n"
 
         #expect(

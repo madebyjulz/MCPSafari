@@ -12,7 +12,7 @@ export const AUTO_SCAN_RANGE = 10;
 export const DEFAULT_PROFILE_ID = "default";
 
 /** The appex that answers `getTokens` over native messaging. */
-export const NATIVE_HOST_ID = "com.epistates.MCPSafari.Extension";
+export const NATIVE_HOST_ID = "app.eventra.MCPSafari.Extension";
 
 /** Lowest and highest port a user or token may name. */
 export const MIN_PORT = 1024;
