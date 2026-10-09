@@ -4,6 +4,8 @@
 
 These instructions describe `main`. For an installed release, use the documentation at its tag in [Releases](https://github.com/Epistates/MCPSafari/releases).
 
+This fork publishes no releases. Homebrew and the release downloads below install [upstream](https://github.com/Epistates/MCPSafari)'s build; to run this fork's code, install [from source](#from-source).
+
 ## Installation
 
 ### Homebrew (recommended)
@@ -68,7 +70,7 @@ about where they came from. Releases before v0.4.0 have checksums only.
 
 ### From source
 
-See [development](development.md) for build requirements and commands.
+See [Build from source](../README.md#build-from-source) for the short version, and [development](development.md) for requirements, tests, and architecture.
 
 ## Configuration
 

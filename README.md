@@ -2,6 +2,8 @@
 
 A native Safari MCP server for your real, logged-in Safari on macOS. Works with any MCP-compatible client, including Claude Code, Codex, Cursor, OpenCode, and oh-my-pi.
 
+> **This is a fork** of [Epistates/MCPSafari](https://github.com/Epistates/MCPSafari). The Safari extension is rewritten in TypeScript, with its background page and popup on [Effect](https://effect.website) 4, and several extension bugs are fixed; the [changelog](CHANGELOG.md) lists both. The Swift server is unchanged. The fork publishes no releases of its own: Homebrew and the release downloads below install upstream's build, so to run this fork, [build it from source](#build-from-source).
+
 <div align="center">
   <video src="https://github.com/user-attachments/assets/96566f48-a7b7-468b-bf96-8ca5c5c86da7" muted autoplay loop playsinline width="100%"></video>
 </div>
@@ -15,7 +17,7 @@ Your agent starts with your existing logins, cookies, and history. Open a signed
 
 QA on real sites has shaped the tools, including fixes for [menus that ignored clicks](https://github.com/Epistates/MCPSafari/pull/74) and [drop zones that missed files](https://github.com/Epistates/MCPSafari/pull/75).
 
-Built with Swift and a Manifest V3 Safari extension. Requires macOS 14+ and Safari 17+. Xcode is only needed to build from source.
+Built with Swift and a Manifest V3 Safari extension written in TypeScript. Requires macOS 14+ and Safari 17+. Xcode, Node 24 and pnpm are only needed to build from source.
 
 ## Quick start
 
@@ -55,6 +57,28 @@ Ask your agent:
 > Open example.com in a new Safari tab, read the page heading, and take a screenshot.
 
 The heading should be “Example Domain”. If the connection fails, see [troubleshooting](docs/setup.md#troubleshooting). On versions that include it, `mcp-safari doctor` checks the installation without changing it.
+
+## Build from source
+
+You need Xcode 26.6+ (Swift 6.3+), Node 24+, and pnpm (`brew install pnpm`, or see [pnpm.io](https://pnpm.io/installation)).
+
+```sh
+git clone https://github.com/madebyjulz/MCPSafari.git
+cd MCPSafari
+
+pnpm install          # JavaScript tooling for the extension and the repository scripts
+pnpm check            # format, lint, typecheck, build the extension scripts, run their tests
+
+(cd MCPServer && swift build -c release)   # the server: MCPServer/.build/release/MCPSafari
+```
+
+Then open `MCPSafari/MCPSafari.xcodeproj` in Xcode, choose your team under Signing & Capabilities for both targets, and run the `MCPSafari` scheme. Xcode builds the extension's TypeScript itself. Open the app once, enable **MCPSafari Extension** in Safari → Settings → Extensions (for an unsigned development build, first turn on Safari → Settings → Advanced → Show features for web developers, then Safari → Settings → Developer → Allow unsigned extensions), and point your client at the server binary by absolute path:
+
+```sh
+claude mcp add --scope user mcp-safari "$PWD/MCPServer/.build/release/MCPSafari"
+```
+
+[Development](docs/development.md) covers the tests, the architecture, and release qualification.
 
 ## Before you use it
 
