@@ -1,0 +1,91 @@
+// Functions the background hands to `scripting.executeScript`. Safari
+// serialises each one with `Function.prototype.toString` and runs it in the
+// page, so none of them may close over anything in this module, call a helper,
+// or rely on a bundler-provided runtime. They run with nothing but the
+// language and the DOM, which is also why they inspect values directly.
+
+/**
+ * Injected into the tab to prove it can be reached at all. Named rather than
+ * inline so a caller reading a trace can tell a probe from real work.
+ */
+export function probeTabAccess(): boolean {
+  return true;
+}
+
+/** What the page reported about itself at capture time. */
+export interface PageContext {
+  readonly visible?: boolean;
+  readonly hasFocus?: boolean;
+  readonly viewport?: { readonly width: number; readonly height: number };
+  readonly devicePixelRatio?: number;
+}
+
+/**
+ * Injected into the page, so it must not close over anything here.
+ */
+export function readPageContext(): PageContext {
+  return {
+    visible: document.visibilityState === "visible",
+    hasFocus: document.hasFocus(),
+    viewport: {
+      width: window.innerWidth,
+      height: window.innerHeight,
+    },
+    devicePixelRatio: window.devicePixelRatio,
+  };
+}
+
+/** Navigates the page's session history from inside it. */
+export function goBack(): void {
+  history.back();
+}
+
+export function goForward(): void {
+  history.forward();
+}
+
+/** What `evaluateUserCode` hands back when the code did not produce a value. */
+export interface EvaluationFailure {
+  readonly __error: string;
+  readonly __cspBlocked?: true;
+}
+
+// Injected into the target world, so it must not close over anything here.
+export function evaluateUserCode(code: string): Promise<unknown> | EvaluationFailure {
+  const describe = (e: unknown): EvaluationFailure => {
+    // Whatever was thrown, as text: its message when it has one.
+    // oxlint-disable-next-line typescript/no-base-to-string -- a thrown value can be anything the page threw
+    const message = e && typeof e === "object" && "message" in e && e.message ? String(e.message) : String(e);
+
+    // A page whose script-src omits 'unsafe-eval' refuses to compile a
+    // string in its own realm, which is what new Function does here.
+    const blocked =
+      (typeof EvalError !== "undefined" && e instanceof EvalError) ||
+      /unsafe-eval|trusted-types-eval|Content Security Policy/i.test(message);
+
+    return blocked ? { __error: message, __cspBlocked: true } : { __error: message };
+  };
+
+  try {
+    const expressionCode = String(code).trim().replace(/;+$/, "");
+    let fn: () => Promise<unknown>;
+
+    try {
+      // SAFETY: the source compiled is an async arrow called at once, so the
+      // function returns a promise.
+      // oxlint-disable-next-line typescript/no-implied-eval -- evaluating the caller's code is this tool's purpose
+      fn = new Function(`return (async () => (${expressionCode}))()`) as () => Promise<unknown>;
+    } catch (e) {
+      // A syntax error means it is not a bare expression; a CSP refusal
+      // means neither form will compile, so do not retry it as one.
+      if (typeof EvalError !== "undefined" && e instanceof EvalError) return describe(e);
+      // SAFETY: as above.
+      // oxlint-disable-next-line typescript/no-implied-eval -- as above
+      fn = new Function(`return (async () => { ${code} })()`) as () => Promise<unknown>;
+    }
+
+    return fn().catch((e: unknown) => describe(e));
+  } catch (e) {
+    return describe(e);
+  }
+}

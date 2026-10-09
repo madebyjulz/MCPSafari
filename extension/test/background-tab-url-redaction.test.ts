@@ -1,0 +1,115 @@
+import assert from "node:assert/strict";
+import { afterEach, test } from "vitest";
+
+import { redactUrlSecrets as redact } from "../src/background/tools/redaction.ts";
+import { dataOf, fakeBrowser, launch, stopAll, type FakeTab } from "./helpers/fake-browser.ts";
+
+afterEach(stopAll);
+
+const CALLBACK = "https://app.example/cb?code=FAKE-CODE&state=xyz#access_token=FAKE-TOKEN&token_type=bearer";
+
+const REDACTED = "https://app.example/cb?code=[redacted]&state=xyz#access_token=[redacted]&token_type=bearer";
+
+// Every tab the fake browser knows about sits on the OAuth callback URL, so any
+// handler that leaks the raw URL fails the same assertion.
+function loadBackground() {
+  const tab: FakeTab = { id: 7, url: CALLBACK, title: "Signing in", active: true, windowId: 1 };
+  const api = fakeBrowser();
+
+  api.tabs.query = async () => [tab];
+  api.tabs.get = async () => tab;
+  api.tabs.create = async () => ({ id: 8, url: CALLBACK, title: "" });
+
+  return launch(api).request;
+}
+
+test("redactUrlSecrets masks bearer values in query and fragment and keeps the rest", () => {
+  assert.equal(redact(CALLBACK), REDACTED);
+  assert.equal(
+    redact(
+      "https://a.example/reset?password=hunter2&API_KEY=k1&id_token=t&refresh_token=r&client_secret=s&next=%2Fhome",
+    ),
+    "https://a.example/reset?password=[redacted]&API_KEY=[redacted]&id_token=[redacted]&refresh_token=[redacted]&client_secret=[redacted]&next=%2Fhome",
+  );
+  // A hash-routed SPA callback still has ? and & delimiters inside the fragment.
+  assert.equal(
+    redact("https://spa.example/#/cb?code=FAKE&state=s"),
+    "https://spa.example/#/cb?code=[redacted]&state=s",
+  );
+  // Providers may echo `state` without a value; the code is still an OAuth code.
+  assert.equal(redact("https://app.example/cb?code=FAKE&state"), "https://app.example/cb?code=[redacted]&state");
+  // `&` is legal in a path and must not start a match that swallows the query.
+  assert.equal(
+    redact("https://app.example/a&password=chapter?view=full"),
+    "https://app.example/a&password=chapter?view=full",
+  );
+  assert.equal(redact("https://app.example/plain/path"), "https://app.example/plain/path");
+  assert.equal(redact(""), "");
+  assert.equal(redact(undefined), "");
+});
+
+test("code is only redacted next to state, so SKUs and coupons pass through", () => {
+  assert.equal(redact("https://shop.example/item?code=SKU-42"), "https://shop.example/item?code=SKU-42");
+  assert.equal(
+    redact("https://shop.example/cart?promo=1&code=SAVE10"),
+    "https://shop.example/cart?promo=1&code=SAVE10",
+  );
+  // Parameter names are matched whole: mystate is not state, and a
+  // password-shaped prefix does not widen the match.
+  assert.equal(redact("https://x.example/?code=abc&mystate=1"), "https://x.example/?code=abc&mystate=1");
+  assert.equal(redact("https://x.example/?password_hint=cat"), "https://x.example/?password_hint=cat");
+});
+
+test("tab handlers return the redacted URL", async () => {
+  const request = loadBackground();
+
+  const [queried] = dataOf(await request("tabs_query"));
+
+  assert.equal(queried.url, REDACTED);
+  assert.equal(queried.title, "Signing in");
+
+  const created = dataOf(await request("tabs_create", { url: CALLBACK }));
+
+  assert.equal(created.url, REDACTED);
+
+  const selected = dataOf(await request("select_tab", { tabId: 7 }));
+
+  assert.equal(selected.url, REDACTED);
+  assert.equal(selected.selected, true);
+
+  // `reload` with no `tabs.onUpdated` traffic settles on the current tab once
+  // the no-navigation wait runs out, which the test timing keeps short.
+  const navigated = await request("navigate", { tabId: 7, action: "reload" });
+
+  assert.equal(navigated.data, `Reloaded ${REDACTED} (Signing in)`);
+});
+
+test("the ordinary spellings of a bearer or session value are covered", () => {
+  // Bare `token` and `session` were both missing while the comment on the
+  // list already claimed session values were redacted.
+  assert.equal(redact("https://a.example/?token=abc"), "https://a.example/?token=[redacted]");
+  assert.equal(redact("https://a.example/?session=abc"), "https://a.example/?session=[redacted]");
+  assert.equal(redact("https://a.example/?sessionId=abc"), "https://a.example/?sessionId=[redacted]");
+  assert.equal(redact("https://a.example/?jwt=abc&sig=def"), "https://a.example/?jwt=[redacted]&sig=[redacted]");
+  // A presigned URL's signature is the credential, and the whole URL is then
+  // the thing worth not handing to a transcript.
+  assert.equal(
+    redact("https://b.s3.amazonaws.com/f?X-Amz-Signature=deadbeef&X-Amz-Expires=60"),
+    "https://b.s3.amazonaws.com/f?X-Amz-Signature=[redacted]&X-Amz-Expires=60",
+  );
+});
+
+test("a name that describes a secret rather than carrying one stays readable", () => {
+  // Matching the secret words as substrings takes every one of these, and
+  // none is a credential. Requiring `=` straight after the whole name is what
+  // keeps them, so it is worth pinning rather than leaving to the mechanism.
+  for (const url of [
+    "https://a.example/?token_type=bearer",
+    "https://a.example/?password_hint=cat",
+    "https://a.example/?tokenizer=bpe",
+    "https://a.example/?authority=eu",
+    "https://a.example/?design=flat",
+  ]) {
+    assert.equal(redact(url), url);
+  }
+});

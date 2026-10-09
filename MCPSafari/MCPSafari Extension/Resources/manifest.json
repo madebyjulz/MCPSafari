@@ -15,17 +15,7 @@
     },
 
     "background": {
-        "scripts": [
-            "background-config.js",
-            "background-state.js",
-            "background-bridge.js",
-            "background-router.js",
-            "background-tabs.js",
-            "background-navigation.js",
-            "background-page.js",
-            "background-frames.js",
-            "background.js"
-        ]
+        "scripts": ["background.js"]
     },
 
     "content_scripts": [{
@@ -35,15 +25,7 @@
         "all_frames": false,
         "world": "MAIN"
     }, {
-        "js": [
-            "content-core.js",
-            "content-snapshot.js",
-            "content-target.js",
-            "content-input.js",
-            "content-gesture.js",
-            "content-io.js",
-            "content.js"
-        ],
+        "js": ["content.js"],
         "matches": ["<all_urls>"],
         "run_at": "document_start",
         "all_frames": true

@@ -1,0 +1,13 @@
+packages:
+  - extension
+  - scripts
+
+# One pinned version for every package used by more than one workspace package.
+catalog:
+  "@types/node": 26.6.3
+  effect: 4.0.2
+  typescript: 7.0.2
+  vitest: 5.0.3
+
+minimumReleaseAgeExclude:
+  - happy-dom@20.14.6

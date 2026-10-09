@@ -1,0 +1,23 @@
+{
+  "name": "mcpsafari-extension",
+  "private": true,
+  "description": "TypeScript sources for the MCPSafari Safari Web Extension and host app scripts",
+  "type": "module",
+  "scripts": {
+    "build": "rm -rf dist && tsdown",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json",
+    "test": "tsdown && vitest run"
+  },
+  "dependencies": {
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/vitest": "4.0.2",
+    "@types/node": "catalog:",
+    "@types/webextension-polyfill": "0.12.6",
+    "happy-dom": "20.14.6",
+    "tsdown": "0.23.0",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

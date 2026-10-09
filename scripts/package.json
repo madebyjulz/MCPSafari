@@ -1,0 +1,16 @@
+{
+  "name": "mcpsafari-scripts",
+  "private": true,
+  "description": "Release, audit, and MCP contract tooling for MCPSafari, run directly by Node",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run --project unit",
+    "test:mcp": "vitest run --project mcp"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

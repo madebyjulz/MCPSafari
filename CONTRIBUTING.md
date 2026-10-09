@@ -17,14 +17,18 @@ the code than after.
 Every behaviour change carries a test that fails without it. Check that by reverting
 your change and watching the test go red, rather than assuming it would.
 
-Run all four suites before you push:
+Run all three before you push:
 
 ```sh
 (cd MCPServer && swift build && swift test)
-node --test Tests/*.mjs
-node --test .github/scripts/test_mcp_results.mjs
-python3 .github/scripts/test_prepare_release.py
+pnpm install && pnpm check
+pnpm test:mcp
 ```
+
+`pnpm check`, at the repository root, format-checks, lints and typechecks the
+whole TypeScript workspace, builds the extension's scripts, and runs the extension
+and release-script tests. `pnpm test:mcp` drives the debug server from the first
+line against a fixture extension. `pnpm fmt` fixes formatting.
 
 Two kinds of change need more than that. Anything touching the bridge needs a
 loopback test over real sockets, because a faked transport would have passed the

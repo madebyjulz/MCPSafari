@@ -1,0 +1,30 @@
+{
+  "name": "mcpsafari",
+  "private": true,
+  "description": "Tooling for the MCPSafari repository: the Safari extension's TypeScript (extension/) and the release and CI scripts (scripts/)",
+  "type": "module",
+  "scripts": {
+    "build": "pnpm --filter mcpsafari-extension build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "test:mcp": "pnpm --filter mcpsafari-scripts test:mcp",
+    "lint": "oxlint .",
+    "fmt": "oxfmt",
+    "fmt:check": "oxfmt --check",
+    "check": "pnpm fmt:check && pnpm lint && pnpm typecheck && pnpm test",
+    "prepare": "effect-tsgo patch --typescript --oxlint"
+  },
+  "devDependencies": {
+    "@effect/tsgo": "0.47.1",
+    "@oxlint/plugins": "1.86.0",
+    "@types/node": "catalog:",
+    "oxfmt": "0.71.0",
+    "oxlint": "1.86.0",
+    "oxlint-tsgolint": "7.0.2003",
+    "typescript": "catalog:"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "pnpm@12.10.1"
+}

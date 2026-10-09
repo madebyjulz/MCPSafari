@@ -4,7 +4,7 @@
 
 ## Build and test
 
-Source builds require macOS 14+, Safari 17+, Swift 6.3+, and Xcode 26.6 (the version selected by CI).
+Source builds require macOS 14+, Safari 17+, Swift 6.3+, Xcode 26.6 (the version selected by CI), Node 24+, and pnpm.
 
 Clone the repository, then build from its root. The parentheses keep each command group in its own directory.
 
@@ -13,14 +13,14 @@ git clone https://github.com/Epistates/MCPSafari.git
 cd MCPSafari
 
 (cd MCPServer && swift build && swift test)
-node --test Tests/*.mjs
+pnpm install && pnpm check
 
 (cd MCPSafari && xcodebuild -project MCPSafari.xcodeproj \
   -scheme MCPSafari -configuration Debug build \
   CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO)
 ```
 
-The extension build above matches CI and checks compilation. To install a development build, open `MCPSafari/MCPSafari.xcodeproj` in Xcode, configure signing for your team, and build and run the app. Enable its extension in Safari settings.
+The extension build above matches CI and checks compilation. Xcode builds the extension's TypeScript itself, through a "Bundle extension scripts" build phase in both targets, so pnpm must be installed where Xcode can find it (Homebrew's or pnpm's standard locations). To install a development build, open `MCPSafari/MCPSafari.xcodeproj` in Xcode, configure signing for your team, and build and run the app. Enable its extension in Safari settings.
 
 Point your MCP client at `MCPServer/.build/debug/MCPSafari` using an absolute path. Add `--verbose` to its arguments for debug logs. For a release server binary:
 
@@ -32,7 +32,7 @@ The binary is `MCPServer/.build/release/MCPSafari`.
 
 ## CI
 
-[ci.yml](../.github/workflows/ci.yml) builds and tests the Swift server, runs the Node extension tests, checks the MCP handshake, and builds the Safari extension. Its path filters skip Markdown-only changes. Security scans have [separate workflows](../.github/workflows).
+[ci.yml](../.github/workflows/ci.yml) builds and tests the Swift server, checks the extension's TypeScript (`pnpm check`), checks the MCP handshake, and builds the Safari extension. Its path filters skip Markdown-only changes. Security scans have [separate workflows](../.github/workflows).
 
 ## Architecture
 
@@ -58,37 +58,46 @@ Four `extension SafariMCPServer` files carry the parts that need no actor state,
 
 In those files, an `internal` member is one the handlers call; everything else is `private`. Swift scopes `private` to the file, so the access level marks the seam between a subsystem and the rest of the server.
 
-### Safari extension (`MCPSafari/`)
+### Safari extension (`extension/` and `MCPSafari/`)
 
-A Manifest V3 Safari Web Extension with:
+A Manifest V3 Safari Web Extension. Its scripts are TypeScript in `extension/src/`, bundled by [tsdown](https://tsdown.dev) into one classic IIFE script per file Safari loads. The bundles are generated, not checked in: they land in `extension/dist/`, and the "Bundle extension scripts" build phase copies them into the app and extension bundles. Everything else Safari loads — `manifest.json`, `popup.html`, `popup.css`, icons, locales — stays in `MCPSafari/MCPSafari Extension/Resources/`.
 
-- The background, split across nine files that the manifest loads in order. These are classic scripts sharing one global, so a function in any of them may call a function in any other without imports. Order matters only at load time: a statement that runs while the page is loading can see only what the files before it declared, which is why `background.js` is last. The background is deliberately **not** declared `"type": "module"`, because that would give each file its own scope and break every cross-file reference:
-  - `background-config.js` — ports, timeouts, and the deadline helper the others measure against
-  - `background-state.js` — connection, profile and tab state, and the website-access checks that read it
-  - `background-bridge.js` — the WebSocket client: connecting, reconnecting, reporting each port
-  - `background-router.js` — `handleRequest`, one bridge request in and one response out
-  - `background-tabs.js` — tab and window tools, and the native-input handlers that foreground a tab
-  - `background-navigation.js` — `navigate`, and waiting for the load it starts
-  - `background-page.js` — screenshots, page JavaScript execution, window resizing
-  - `background-frames.js` — talking to content scripts, and routing across a page's frames
-  - `background.js` — event listeners, the keepalive, token loading, and startup
-- The content script, split across seven files that the manifest injects in order. Each is its own IIFE and they share one namespace on the isolated world, `window.__mcpSafari`, because the background script re-injects them by name and top-level declarations would collide on the second pass. A file reads only what the ones before it published, so the load order below is also the dependency order:
-  - `content-core.js` — the namespace, element uid bookkeeping, tool errors, event primitives, the bridge to the MAIN-world interceptors
-  - `content-snapshot.js` — page text, shadow-DOM traversal, the accessibility snapshot with its roles, names and redaction
-  - `content-target.js` — turning a uid, selector or text into one element, and whether a real pointer could reach it
-  - `content-input.js` — clicks, React-compatible value setting, typing, form fills, select options
-  - `content-gesture.js` — scrolling, key presses, hover, drag, native-pointer measurement
-  - `content-io.js` — file attachment, element measurement, waiting, interceptor delegates
-  - `content.js` — loaded last, routes one bridge action to the handler that owns it
-- `trace-interceptor.js` — Captures action-window URL, history, console, network, and DOM mutation events
-- `dialog-interceptor.js` — Patches `window.alert/confirm/prompt` before page scripts run
-- `console-interceptor.js` — Captures console messages for `read_console`
-- `network-interceptor.js` — Captures XHR/fetch requests for `read_network`
-- `popup.html/js/css` — Extension popup showing connection status
+The repository root is a pnpm workspace holding `extension/` and `scripts/`. They share one toolchain configured at the root: oxfmt, oxlint (with the `@effect/tsgo` preset and the vendored anti-slop rules in `tools/oxlint/`), TypeScript 7 (`tsconfig.base.json`), and Vitest. `pnpm check` at the root runs all of it.
+
+The extension's code runs in three places, and what each may depend on differs:
+
+- **The background page** (`src/background/`) is written with [Effect](https://effect.website) 4. Each concern is a service with a layer, composed in `background.ts` and run by one `ManagedRuntime` from `main.ts`:
+  - `Browser.ts` — the WebExtension API as a service, so tests hand in a fake
+  - `config.ts` — ports, and every timeout and delay as one `BackgroundTiming` reference tests can shrink
+  - `errors.ts` — `ToolError`, the one failure type, and the bridge response it becomes
+  - `TabAccess.ts` — probing whether a tab can be reached, and the deadlines that turn Safari's website-access dialog into a named `permission_required`
+  - `SelectedTab.ts` — the tab `select_tab` pinned, and which tab a call with no `tabId` acts on
+  - `ContentScripts.ts` — sending to a frame's content script, re-injecting it, and routing across a page's frames
+  - `tools/` — the handlers the background serves itself: tabs, navigation, screenshots, page JavaScript, window size
+  - `injected.ts` — functions serialised into pages with `scripting.executeScript`, which must close over nothing
+  - `actions.ts` / `Router.ts` — which actions exist, and one bridge request in, one response out
+  - `Connections.ts` — the WebSocket clients: tokens, handshake, reconnecting, the keepalive
+  - `Popup.ts` — answering the popup
+- **The popup** (`src/popup/`) also uses Effect, and shares its message schemas with the background through `src/shared/popup.ts`.
+- **Page-injected code** carries no dependencies at all, Effect included: it is parsed into every page and frame Safari opens. The build fails if a dependency is bundled into it.
+  - `src/content/` — the content script, one bundle injected into every frame's isolated world: `core.ts` (element uids, tool errors, the bridge to the page world), `snapshot.ts`, `target.ts`, `input.ts`, `gesture.ts`, `io.ts`, and `main.ts`, which routes each action and guards against a second injection
+  - `src/page/` — five scripts in the page's own world, injected before page scripts run: the trace, dialog, console and network interceptors, and `file-drop.ts`
+- `src/shared/protocol.ts` — the contracts all of them share: script file names, content actions, error codes, the page-world channel. Constants and types only, so page code can import it.
 
 ### macOS host app
 
 A minimal macOS app (`AppDelegate.swift`, `ViewController.swift`) that registers the Safari extension and provides native messaging for auth token exchange.
+
+### Repository scripts (`scripts/`)
+
+The release, audit, and MCP contract tooling CI runs, in TypeScript that Node 24 runs directly (`node scripts/src/<name>.ts`): no build step and no runtime dependencies, so only erasable syntax and `.ts` import paths.
+
+- `prepare-release.ts` — `qualify <tag>`, `notes <tag> <output>`, `artifacts <directory>`: the release gates and checksums
+- `audit-swiftpm-osv.ts` — checks `Package.resolved` pins against OSV.dev
+- `smoke-mcp.ts` — the stdio handshake against a built server binary
+- `test/mcp-results.test.ts` — every tool's result contract against the real server and a fixture extension; `pnpm test:mcp`, after `swift build`
+
+It uses the same pnpm, oxfmt, oxlint, TypeScript and Vitest setup as `extension/`; `pnpm check` runs everything but the MCP contract test.
 
 ## Release qualification
 
@@ -140,7 +149,7 @@ tests, and workflow paths against `sourceCommit`; changes in these paths require
 new qualification. Documentation-only evidence commits are allowed. Check locally:
 
 ```sh
-python3 .github/scripts/prepare_release.py qualify v0.4.0
+node scripts/src/prepare-release.ts qualify v0.4.0
 ```
 
 Manual distribution validation remains available while browser qualification is
