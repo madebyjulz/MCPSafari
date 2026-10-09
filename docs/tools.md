@@ -220,7 +220,7 @@ Use `form_input` to fill multiple fields at once:
 }
 ```
 
-This uses React-compatible value setting (`nativeInputValueSetter`) so it works with controlled inputs in React, Next.js, and similar frameworks.
+This uses React-compatible value setting (the native value setter of each element's own prototype) so it works with controlled inputs in React, Next.js, and similar frameworks. A `<select>` takes an option's value, and fails if no option has it. A checkbox or radio is checked by any value except `""`, `false`, `0`, `off`, `no`, or `unchecked`, through a real click so frameworks see the change. Each field is reported on its own line, so one field that cannot be filled does not stop the rest; the call fails only when no field was filled.
 
 ### File upload and drop
 

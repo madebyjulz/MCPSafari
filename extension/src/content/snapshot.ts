@@ -35,11 +35,6 @@ export type SnapshotNode = {
   truncated?: true;
 };
 
-/** ARIA roles by lower-case tag name or input type. */
-interface RoleTable {
-  readonly [name: string]: string;
-}
-
 /** A document or an open shadow root: a tree querySelector can see into. */
 export type QueryRoot = Document | ShadowRoot;
 
@@ -216,7 +211,7 @@ function buildTree(element: PageElement, depth: number, budget: SnapshotBudget):
 
   // Value for inputs. Secrets report their presence, not their contents,
   // so a snapshot of a filled login or payment form is safe to hand to a model.
-  if (element.value !== undefined && element.value !== "") {
+  if (reportsValue(element, tag) && element.value !== undefined && element.value !== "") {
     node.value = isSensitiveInput(element) ? REDACTED : String(element.value);
   }
 
@@ -232,9 +227,9 @@ function buildTree(element: PageElement, depth: number, budget: SnapshotBudget):
   }
 
   // Href for links
-  if (tag === "a" && element.href) {
-    node.href = element.href;
-  }
+  const href = tag === "a" ? linkHref(element) : "";
+
+  if (href) node.href = href;
 
   // A frame's document belongs to a different content script, so the
   // background splices it in here. It matches on the resolved src and
@@ -261,7 +256,7 @@ function buildTree(element: PageElement, depth: number, budget: SnapshotBudget):
   // Leaf nodes report their whole text content. Nodes that also have
   // element children report their own direct text nodes, so mixed
   // content such as <button><span>9</span>All</button> keeps "All".
-  const rawText = children.length === 0 ? renderedTextRoot(element).textContent : ownTextContent(element);
+  const rawText = children.length === 0 ? renderedText(renderedTextRoot(element)) : ownTextContent(element);
 
   if (rawText) {
     const text = rawText.trim();
@@ -276,6 +271,62 @@ function buildTree(element: PageElement, depth: number, budget: SnapshotBudget):
   if (children.length > 0) node.children = children;
 
   return node;
+}
+
+// Only form controls hold a value a user typed or chose. Elsewhere `value`
+// means something else: an <li>'s ordinal, which reads 0 on every list item.
+// Options stay because select_option takes an option's value. A progress bar
+// or meter reads 0 when it has no value at all, so it reports one only when
+// the page set it.
+const VALUE_TAGS = new Set(["input", "textarea", "select", "option"]);
+
+function reportsValue(element: PageElement, tag: string): boolean {
+  if (VALUE_TAGS.has(tag)) return true;
+
+  return (tag === "progress" || tag === "meter") && element.getAttribute("value") !== null;
+}
+
+// An SVG <a> answers `href` with an SVGAnimatedString, not a URL. Its
+// baseVal is the attribute as written, so it is resolved the way an HTML
+// link's href already is.
+function linkHref(element: PageElement): string {
+  const href = element.href;
+
+  if (typeof href === "string") return href;
+
+  const raw = href?.baseVal;
+
+  if (!raw) return "";
+
+  try {
+    return new URL(raw, document.baseURI).href;
+  } catch {
+    return raw;
+  }
+}
+
+// Elements whose text is never drawn. textContent includes it anyway, so a
+// component whose shadow root holds only a <style> would report its CSS.
+const UNRENDERED_TAGS = new Set(["STYLE", "SCRIPT", "NOSCRIPT", "TEMPLATE"]);
+
+// textContent of a leaf, minus whatever unrendered elements contain. A root
+// with no element children cannot hold one, so it keeps the native read.
+function renderedText(root: PageElement | ShadowRoot): string {
+  if (root.children.length === 0) return root.textContent ?? "";
+
+  let text = "";
+
+  for (const child of root.childNodes) {
+    if (child.nodeType === Node.TEXT_NODE) {
+      text += child.textContent;
+    } else if (child.nodeType === Node.ELEMENT_NODE) {
+      const element = asPageElement(child);
+
+      if (!UNRENDERED_TAGS.has(element.tagName.toUpperCase())) text += renderedText(element);
+    }
+  }
+
+  return text;
 }
 
 // Text of an element's direct text-node children only, in document order.
@@ -318,35 +369,53 @@ export function getRole(element: PageElement): string | null {
 
   if (tag === "input") return getInputRole(element);
 
-  const implicitRoles: RoleTable = {
-    a: "link",
-    button: "button",
-    select: "combobox",
-    textarea: "textbox",
-    img: "img",
-    h1: "heading",
-    h2: "heading",
-    h3: "heading",
-    h4: "heading",
-    h5: "heading",
-    h6: "heading",
-    nav: "navigation",
-    main: "main",
-    aside: "complementary",
-    footer: "contentinfo",
-    header: "banner",
-    form: "form",
-    table: "table",
-    ul: "list",
-    ol: "list",
-    li: "listitem",
-    dialog: "dialog",
-    details: "group",
-    summary: "button",
-  };
-
-  return implicitRoles[tag] || null;
+  return IMPLICIT_ROLES.get(tag) ?? null;
 }
+
+// Maps, not object literals: a tag or type named after an Object.prototype
+// member (<constructor>) would otherwise read back a function as its role.
+const IMPLICIT_ROLES: ReadonlyMap<string, string> = new Map([
+  ["a", "link"],
+  ["button", "button"],
+  ["select", "combobox"],
+  ["textarea", "textbox"],
+  ["img", "img"],
+  ["h1", "heading"],
+  ["h2", "heading"],
+  ["h3", "heading"],
+  ["h4", "heading"],
+  ["h5", "heading"],
+  ["h6", "heading"],
+  ["nav", "navigation"],
+  ["main", "main"],
+  ["aside", "complementary"],
+  ["footer", "contentinfo"],
+  ["header", "banner"],
+  ["form", "form"],
+  ["table", "table"],
+  ["ul", "list"],
+  ["ol", "list"],
+  ["li", "listitem"],
+  ["dialog", "dialog"],
+  ["details", "group"],
+  ["summary", "button"],
+]);
+
+const INPUT_ROLES: ReadonlyMap<string, string> = new Map([
+  ["text", "textbox"],
+  ["email", "textbox"],
+  ["password", "textbox"],
+  ["search", "searchbox"],
+  ["tel", "textbox"],
+  ["url", "textbox"],
+  ["number", "spinbutton"],
+  ["range", "slider"],
+  ["checkbox", "checkbox"],
+  ["radio", "radio"],
+  ["button", "button"],
+  ["submit", "button"],
+  ["reset", "button"],
+]);
 
 // Inputs whose contents must never reach a snapshot. Covers the explicit
 // password type plus the autocomplete tokens browsers use for secrets.
@@ -383,23 +452,7 @@ function isSensitiveInput(element: PageElement): boolean {
 function getInputRole(element: PageElement): string {
   const type = (element.type || "text").toLowerCase();
 
-  const inputRoles: RoleTable = {
-    text: "textbox",
-    email: "textbox",
-    password: "textbox",
-    search: "searchbox",
-    tel: "textbox",
-    url: "textbox",
-    number: "spinbutton",
-    range: "slider",
-    checkbox: "checkbox",
-    radio: "radio",
-    button: "button",
-    submit: "button",
-    reset: "button",
-  };
-
-  return inputRoles[type] || "textbox";
+  return INPUT_ROLES.get(type) ?? "textbox";
 }
 
 export function getAccessibleName(element: PageElement): string | null {
@@ -415,7 +468,7 @@ export function getAccessibleName(element: PageElement): string | null {
     const labelText = labelledBy
       .split(/\s+/)
       .filter(Boolean)
-      .map((id) => document.getElementById(id))
+      .map((id) => labelledByElement(element, id))
       .filter((labelEl): labelEl is HTMLElement => Boolean(labelEl))
       .map((labelEl) => labelEl.textContent.trim())
       .filter(Boolean)
@@ -452,6 +505,19 @@ export function getAccessibleName(element: PageElement): string | null {
   if (element.placeholder) return element.placeholder;
 
   return null;
+}
+
+/** A node an id can be looked up in: a document or a shadow root, not a detached element. */
+type IdScope = Node & { readonly getElementById?: (id: string) => HTMLElement | null };
+
+// The ids name elements in the element's own tree, so a control inside a
+// shadow root is labelled from that root, as `label[for]` is. The document
+// is still asked when the root has no such id, as it was before roots
+// were consulted at all.
+function labelledByElement(element: PageElement, id: string): HTMLElement | null {
+  const scope: IdScope = element.getRootNode ? element.getRootNode() : document;
+
+  return scope.getElementById?.(id) ?? document.getElementById(id);
 }
 
 /** The root an element lives in, as a tree that can be queried. */

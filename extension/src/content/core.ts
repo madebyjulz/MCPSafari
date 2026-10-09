@@ -31,7 +31,8 @@ export interface PageElement extends HTMLElement {
   readonly type?: string;
   readonly multiple?: boolean;
   files?: FileList | null;
-  readonly href?: string;
+  /** A URL on an HTML anchor; an SVGAnimatedString on an SVG one. */
+  readonly href?: string | SVGAnimatedString;
   readonly src?: string;
   readonly alt?: string;
   readonly placeholder?: string;

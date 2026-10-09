@@ -39,11 +39,6 @@ export interface NativePointerParams extends TargetParams {
   readonly toSelector?: string;
 }
 
-/** Scroll offsets by direction name. */
-interface ScrollTable {
-  readonly [direction: string]: ScrollToOptions;
-}
-
 /** A point in global screen coordinates, as CGEvent posts them. */
 export type ScreenPoint = { x: number; y: number };
 
@@ -64,16 +59,16 @@ export function scrollPage(params: ScrollParams): string {
   // Explicit null check: `amount: 0` is a caller-meant no-op, not "unset".
   const amount = params.amount == null ? window.innerHeight * 0.8 : params.amount;
 
-  const directionMap: ScrollTable = {
-    up: { top: -amount, left: 0 },
-    down: { top: amount, left: 0 },
-    left: { top: 0, left: -amount },
-    right: { top: 0, left: amount },
-  };
+  // A Map, so a direction named after an Object.prototype member
+  // ("toString") is refused rather than read back as a function.
+  const directionMap: ReadonlyMap<string | undefined, ScrollToOptions> = new Map([
+    ["up", { top: -amount, left: 0 }],
+    ["down", { top: amount, left: 0 }],
+    ["left", { top: 0, left: -amount }],
+    ["right", { top: 0, left: amount }],
+  ]);
 
-  // SAFETY: an absent direction indexes the key "undefined", which is not in
-  // the map, exactly as the property lookup always has.
-  const scroll = directionMap[params.direction as string];
+  const scroll = directionMap.get(params.direction);
 
   if (!scroll) {
     throw toolError(
@@ -107,10 +102,13 @@ export function pressKey(params: PressKeyParams): string {
     );
   }
 
-  const parts = keyString.split("+");
+  // "+" separates modifiers from the key and is a key itself, so a trailing
+  // "+" ("+", "Shift++") is the key rather than an empty part after one.
+  const plusKey = keyString.endsWith("+");
+  const parts = (plusKey ? keyString.slice(0, -1) : keyString).split("+");
   // split always returns at least one part, so pop never comes back empty-handed.
-  const key = parts.pop()!;
-  const modifiers = parts.map((m) => m.toLowerCase());
+  const key = plusKey ? "+" : parts.pop()!;
+  const modifiers = parts.filter(Boolean).map((m) => m.toLowerCase());
 
   const eventOpts = {
     key,
@@ -400,10 +398,20 @@ export function nativePointerPoints(params: NativePointerParams): NativePointerP
 // A native key reaches whatever Safari has focused; when the chrome (e.g.
 // the address bar) holds focus the page never sees it. Pull focus into
 // the document unless the page already has it.
+//
+// <body> takes focus only while it has a tabindex, so one is set for the
+// call and then put back: left behind, it changes how the page tabs and what
+// it styles. Restoring it in the same task keeps the focus already given.
 export function prepareNativeKey(): string {
-  if (!document.hasFocus() && document.body) {
-    document.body.setAttribute("tabindex", "-1");
-    document.body.focus({ preventScroll: true });
+  const body = document.body;
+
+  if (!document.hasFocus() && body) {
+    const previous = body.getAttribute("tabindex");
+    body.setAttribute("tabindex", "-1");
+    body.focus({ preventScroll: true });
+
+    if (previous === null) body.removeAttribute("tabindex");
+    else body.setAttribute("tabindex", previous);
   }
 
   return "Page ready for native key";

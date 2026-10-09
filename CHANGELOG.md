@@ -23,6 +23,18 @@
 - Console/network filters use a bounded regex subset and reject invalid or potentially expensive patterns instead of silently ignoring filters. Captured fields report truncation; bridge messages and in-flight requests have explicit limits.
 
 ### Fixed
+- `form_input` and `type_text` set selects, checkboxes and radios. Every element got the text input's value setter, which throws "Illegal invocation" on a `<select>` and on the page body when nothing is focused, and only sets a checkbox's `value`, never whether it is checked. `form_input` also stopped at the first field that failed, after filling the ones before it; each field now reports its own outcome.
+- `type_text` with `submitKey: "Enter"` submits only from a single-line input, and only when the page let the key through. It also submitted from textareas, where Enter is a new line, and after the page had handled Enter itself.
+- Snapshots give a `value` only to controls that hold one. A list item's numeric `value` property is always 0, so every `<li>` reported `value: "0"`, and progress bars without a value reported a reading they did not have.
+- Snapshot text leaves out the contents of `<style>`, `<script>`, `<noscript>` and `<template>`, so a component whose shadow root holds only styles no longer reads as CSS.
+- `aria-labelledby` resolves ids inside the element's own shadow root, as `label[for]` already did.
+- SVG links report their `href` as a URL rather than an empty object.
+- `upload_file`, `drop_file` and the screenshot target lookup refuse a call with no `uid` or `selector` with `invalid_input`, rather than failing with "Cannot read properties of null".
+- `press_key` accepts `+` and `Shift++`; splitting on `+` left no key at all.
+- `prepare_native_key` no longer leaves `tabindex="-1"` on the page body after focusing it.
+- `handle_dialog` says when it has armed interception for the next dialog, instead of reporting that no dialog was found.
+- Element roles and scroll directions are looked up by own name only, so `scroll` with `direction: "toString"` is refused rather than scrolling with whatever `Object.prototype` returned.
+- `wait` treats `timeout: 0` as a single check and `seconds: 0` as no wait, rather than as the defaults.
 - `fetch(url, null)` works again on pages the network interceptor watches. The wrapper's default for `init` did not apply to `null`, so reading its method threw and a call the browser accepts failed. A `Request` is also recorded with its own method rather than as `GET`, and a fetch rejected with something other than an `Error` rejects unchanged instead of with a `TypeError`.
 - `drop_file` reaches targets inside open shadow roots. The page side looked for its marker with `document.querySelector`, which sees one tree only, and failed with an error that also kept the isolated-world fallback from running. The marker is now compared as text, never parsed as a selector.
 - Page-world failures always carry a message. A thrown value that was not an `Error` produced a reply with no error at all, which read as success with no data.

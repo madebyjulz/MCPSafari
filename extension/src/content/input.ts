@@ -4,7 +4,7 @@
  */
 
 import type { ContentParams } from "../shared/protocol.ts";
-import { asPageElement, firesKeypress, pointerEvent, toolError, type PageElement } from "./core.ts";
+import { asPageElement, firesKeypress, pointerEvent, toolError, type PageElement, type ThrownError } from "./core.ts";
 import { deepQueryFirst } from "./snapshot.ts";
 import { assertReachable, resolveElement, scrollToTarget, type TargetParams } from "./target.ts";
 
@@ -118,31 +118,146 @@ function simulateClick(element: PageElement, doubleClick: boolean | undefined, p
 
 // ─── React-Compatible Value Setting ─────────────────────────────
 
+/** How a value reaches an element, by the kind of control it is. */
+type ValueKind = "editable" | "select" | "checkable" | "text";
+
+// Single-line text fields: where typing goes, and where Enter submits the form.
+const TEXT_INPUT_TYPES = new Set<string | undefined>(["text", "search", "url", "tel", "email", "password", "number"]);
+
+const CHECKABLE_TYPES = new Set<string | undefined>(["checkbox", "radio"]);
+
+function valueKind(el: PageElement): ValueKind | null {
+  if (el.isContentEditable) return "editable";
+
+  const tag = el.tagName.toLowerCase();
+
+  if (tag === "select") return "select";
+
+  if (tag === "textarea") return "text";
+
+  if (tag === "input") return CHECKABLE_TYPES.has(el.type) ? "checkable" : "text";
+
+  return null;
+}
+
 function setInputValue(el: PageElement, value: string, append = false): void {
-  if (el.isContentEditable) {
-    setEditableText(el, value, append);
+  const kind = valueKind(el);
 
-    return;
+  switch (kind) {
+    case "editable":
+      setEditableText(el, value, append);
+
+      return;
+    case "select":
+      // A choice replaces the selection; there is nothing to append to.
+      setSelectValue(el, value);
+
+      return;
+    case "checkable":
+      setChecked(el, value);
+
+      return;
+    case "text":
+      setTextValue(el, append ? el.value + value : value);
+
+      return;
+    case null:
+      throw toolError(
+        "target_not_found",
+        `<${el.tagName.toLowerCase()}> does not take a value; target an input, textarea, select, or contenteditable element`,
+        false,
+        "take_snapshot",
+      );
   }
+}
 
-  // Use the native setter to bypass React's synthetic event system.
-  // React overrides the `value` property on inputs; setting it directly
-  // doesn't trigger React's onChange. The native setter does.
-  const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-  // oxlint-disable-next-line typescript/unbound-method -- the setter is invoked with .call(el) below
-  const nativeSetter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+/** A control prototype carrying the native accessors React shadows on its instances. */
+type ControlPrototype = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
 
-  const newValue = append ? el.value + value : value;
+// React overrides the `value` property on each control it renders, so
+// assigning `el.value` updates its tracker and onChange never fires. The
+// setter from the control's own prototype bypasses that. It has to be that
+// prototype: another element type's setter throws "Illegal invocation".
+function nativeSetter(
+  proto: ControlPrototype,
+  property: "value" | "checked",
+): ((this: PageElement, value: string | boolean) => void) | undefined {
+  // oxlint-disable-next-line typescript/unbound-method -- the setter is invoked with .call(el) by the callers
+  return Object.getOwnPropertyDescriptor(proto, property)?.set;
+}
 
-  if (nativeSetter) {
-    nativeSetter.call(el, newValue);
-  } else {
-    el.value = newValue;
-  }
-
+function dispatchInputAndChange(el: PageElement): void {
   // Dispatch events that React and other frameworks listen for
   el.dispatchEvent(new Event("input", { bubbles: true }));
   el.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+function setTextValue(el: PageElement, value: string): void {
+  const proto = el.tagName.toLowerCase() === "textarea" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+  const setter = nativeSetter(proto, "value");
+
+  if (setter) {
+    setter.call(el, value);
+  } else {
+    el.value = value;
+  }
+
+  dispatchInputAndChange(el);
+}
+
+// Assigning a value no option has clears the selection instead of throwing,
+// so the result is checked and the previous selection put back on a miss.
+function setSelectValue(el: PageElement, value: string): void {
+  const setter = nativeSetter(HTMLSelectElement.prototype, "value");
+  const previous = el.value;
+
+  const assign = (next: string | undefined) => {
+    if (setter) setter.call(el, next ?? "");
+    else el.value = next;
+  };
+
+  assign(value);
+
+  if (el.value !== value) {
+    assign(previous);
+
+    throw toolError("target_not_found", `No option with value "${value}" in <select>`, false, "take_snapshot");
+  }
+
+  dispatchInputAndChange(el);
+}
+
+// Words that mean "unchecked"; any other value checks the box.
+const UNCHECKED_VALUES = new Set(["", "false", "0", "off", "no", "unchecked"]);
+
+// A checkbox's `value` is what the form submits, not whether it is ticked.
+// React reads a checkbox or radio change from its click event, so a state
+// change goes through click(), which toggles, fires input and change, and
+// leaves the page free to refuse it. A radio cannot be unticked by a click,
+// so that one case sets `checked` through the native setter instead.
+function setChecked(el: PageElement, value: string): void {
+  const wanted = !UNCHECKED_VALUES.has(value.trim().toLowerCase());
+
+  if (el.checked === wanted) return;
+
+  if (wanted || el.type !== "radio") {
+    el.click();
+  } else {
+    const setter = nativeSetter(HTMLInputElement.prototype, "checked");
+
+    if (setter) setter.call(el, false);
+    else el.checked = false;
+    dispatchInputAndChange(el);
+  }
+
+  if (el.checked !== wanted) {
+    throw toolError(
+      "input_not_applied",
+      `<input type="${el.type}"> stayed ${el.checked ? "checked" : "unchecked"}; the page blocked the change`,
+      false,
+      "take_snapshot",
+    );
+  }
 }
 
 // Model-backed editors (ProseMirror, Lexical, Slate) apply edits from the
@@ -200,8 +315,7 @@ export function prepareNativeInput(params: TargetParams): string {
 
   const el = asPageElement(target);
   const tag = el.tagName.toLowerCase();
-  const textInputTypes = new Set<string | undefined>(["text", "search", "url", "tel", "email", "password", "number"]);
-  const isTextInput = tag === "textarea" || (tag === "input" && textInputTypes.has(el.type));
+  const isTextInput = tag === "textarea" || (tag === "input" && TEXT_INPUT_TYPES.has(el.type));
 
   if ((!isTextInput && !el.isContentEditable) || el.disabled || el.readOnly) {
     throw toolError(
@@ -232,6 +346,7 @@ export function typeText(params: TypeTextParams): string {
   const el = asPageElement(target);
   el.focus();
 
+  const kind = valueKind(el);
   const readBack = () => (el.isContentEditable ? el.textContent : el.value);
   const before = readBack();
 
@@ -245,9 +360,15 @@ export function typeText(params: TypeTextParams): string {
   // An editor that re-renders from its own model can discard the edit
   // after reporting nothing; success must mean the content changed.
   // A detached element cannot be re-read meaningfully, and clearFirst
-  // with identical text legitimately produces no difference.
+  // with identical text legitimately produces no difference. A select or
+  // checkbox has already verified its own result, and choosing what is
+  // already chosen changes nothing.
   const unchanged =
-    text !== "" && el.isConnected !== false && readBack() === before && !(params.clearFirst && text === before);
+    (kind === "editable" || kind === "text") &&
+    text !== "" &&
+    el.isConnected !== false &&
+    readBack() === before &&
+    !(params.clearFirst && text === before);
 
   if (unchanged) {
     throw toolError(
@@ -267,16 +388,20 @@ export function typeText(params: TypeTextParams): string {
       cancelable: true,
     };
 
-    el.dispatchEvent(new KeyboardEvent("keydown", keyOpts));
+    let proceed = el.dispatchEvent(new KeyboardEvent("keydown", keyOpts));
 
     if (firesKeypress(params.submitKey, keyOpts)) {
-      el.dispatchEvent(new KeyboardEvent("keypress", keyOpts));
+      proceed = el.dispatchEvent(new KeyboardEvent("keypress", keyOpts)) && proceed;
     }
 
     el.dispatchEvent(new KeyboardEvent("keyup", keyOpts));
 
-    // For Enter, also submit the form if present
-    if (params.submitKey === "Enter" && el.form) {
+    // Enter submits the form only where a browser would: from a single-line
+    // field, and only if the page let the key through. In a textarea Enter
+    // is a newline, and a page that cancels it is handling Enter itself.
+    const singleLine = el.tagName.toLowerCase() === "input" && TEXT_INPUT_TYPES.has(el.type);
+
+    if (params.submitKey === "Enter" && proceed && singleLine && el.form) {
       el.form.requestSubmit();
     }
   }
@@ -295,6 +420,7 @@ export function formInput(params: FormInputParams): string {
 
   const results: Array<string> = [];
   const missing: Array<string> = [];
+  const failures: Array<ThrownError> = [];
 
   for (const [selector, value] of entries) {
     const el = deepQueryFirst(selector);
@@ -305,15 +431,35 @@ export function formInput(params: FormInputParams): string {
       continue;
     }
 
-    el.focus();
-    setInputValue(el, value, false);
-    results.push(`${selector}: filled`);
+    // One field the page refuses must not abandon the rest halfway: each
+    // field reports its own outcome, and the ones before it stay filled.
+    try {
+      el.focus();
+      setInputValue(el, value, false);
+      results.push(`${selector}: filled`);
+    } catch (cause) {
+      // SAFETY: a field fails with a ToolError raised above or a DOM exception; both are Errors.
+      const failure = cause as ThrownError;
+      failures.push(failure);
+      // oxlint-disable-next-line typescript/no-base-to-string -- a rejection that is not an Error is reported as its own string form, as the dispatcher does
+      results.push(`${selector}: failed (${String(failure.message || failure)})`);
+    }
   }
 
   // A partial fill still reports per-field results, but filling nothing is a
   // failure rather than a success whose body happens to say "not found".
   if (missing.length === entries.length) {
     throw toolError("target_not_found", `No form fields matched: ${missing.join(", ")}`, false, "take_snapshot");
+  }
+
+  if (missing.length + failures.length === entries.length) {
+    // The first failure's code, when it has one of ours: a DOMException's
+    // `code` is a legacy number, not a ToolErrorCode.
+    const first = failures[0];
+    const code = typeof first?.code === "string" ? first.code : "input_not_applied";
+    const recovery = typeof first?.recoveryAction === "string" ? first.recoveryAction : "take_snapshot";
+
+    throw toolError(code, `No form fields were filled:\n${results.join("\n")}`, false, recovery);
   }
 
   return results.join("\n");

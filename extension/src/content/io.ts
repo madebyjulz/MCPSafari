@@ -45,6 +45,8 @@ type DialogReply = {
   readonly alreadyHandled?: boolean;
   readonly type?: string;
   readonly message?: string;
+  readonly armed?: boolean;
+  readonly expiresInMs?: number;
 };
 
 /** What trace-interceptor.js answers to start_trace. */
@@ -102,10 +104,18 @@ function resolveFileInput(element: PageElement): PageElement {
   );
 }
 
+// These actions take no text or point, so a call naming neither uid nor
+// selector has no target at all; say so instead of dereferencing null.
+function requireTarget(action: string, params: ElementParams): PageElement {
+  const target = resolveElement({ uid: params.uid, selector: params.selector });
+
+  if (!target) throw toolError("invalid_input", `${action} requires uid or selector`, false, "fix_input");
+
+  return target;
+}
+
 export function uploadFile(params: FileParams): string {
-  // Known gap, kept for now: with neither uid nor selector this is null, and
-  // the dereference in resolveFileInput throws a TypeError the dispatcher reports.
-  const target = resolveElement({ uid: params.uid, selector: params.selector })!;
+  const target = requireTarget("upload_file", params);
   const input = resolveFileInput(target);
   const files = buildFiles(params);
 
@@ -133,8 +143,7 @@ export function dropFile(params: FileParams): Promise<string> {
 }
 
 async function dropFileNow(params: FileParams): Promise<string> {
-  // Known gap, kept for now: null without uid or selector; see uploadFile.
-  const target = resolveElement({ uid: params.uid, selector: params.selector })!;
+  const target = requireTarget("drop_file", params);
   const files = buildFiles(params);
   const dropped = `Dropped ${describeFiles(files)} on <${target.tagName.toLowerCase()}>`;
 
@@ -182,8 +191,7 @@ function dispatchDrop(target: PageElement, dataTransfer: DataTransfer): void {
 // lists) run at the next rendering opportunity, so the rect is measured
 // after one frame; the timeout covers a hidden page, which never paints.
 export async function elementRect(params: ElementParams): Promise<ElementRect> {
-  // Known gap, kept for now: null without uid or selector; see uploadFile.
-  const el = resolveElement({ uid: params.uid, selector: params.selector })!;
+  const el = requireTarget("element_rect", params);
   el.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
 
   await new Promise<void>((resolve) => {
@@ -210,38 +218,45 @@ export async function elementRect(params: ElementParams): Promise<ElementRect> {
 
 // ─── Wait ────────────────────────────────────────────────────────
 
+// Zero is a real answer for both durations: `seconds: 0` waits not at all,
+// and `timeout: 0` checks once without waiting. Only an absent one is unset.
 export async function waitFor(params: WaitParams): Promise<string> {
-  const timeout = (params.timeout || 10) * 1000;
+  const timeout = (params.timeout ?? 10) * 1000;
   const start = Date.now();
 
-  if (params.seconds) {
-    await new Promise((r) => setTimeout(r, params.seconds! * 1000));
+  if (params.seconds != null) {
+    const seconds = params.seconds;
+    await new Promise((r) => setTimeout(r, seconds * 1000));
 
-    return `Waited ${params.seconds} seconds`;
+    return `Waited ${seconds} seconds`;
   }
 
-  if (params.selector) {
-    while (Date.now() - start < timeout) {
-      if (deepQueryFirst(params.selector)) {
-        return `Element found: ${params.selector}`;
-      }
+  // Checks before measuring the clock, so even a zero timeout looks once.
+  const poll = async (found: () => boolean): Promise<boolean> => {
+    for (;;) {
+      if (found()) return true;
 
+      if (Date.now() - start >= timeout) return false;
       await new Promise((r) => setTimeout(r, 200));
     }
+  };
 
-    throw toolError("wait_timeout", `Timeout waiting for selector: ${params.selector}`, true, "retry");
+  if (params.selector) {
+    const selector = params.selector;
+
+    if (await poll(() => deepQueryFirst(selector) !== null)) return `Element found: ${selector}`;
+
+    throw toolError("wait_timeout", `Timeout waiting for selector: ${selector}`, true, "retry");
   }
 
   if (params.text) {
-    while (Date.now() - start < timeout) {
-      if (document.body && document.body.innerText.includes(params.text)) {
-        return `Text found: "${params.text}"`;
-      }
+    const text = params.text;
 
-      await new Promise((r) => setTimeout(r, 200));
+    if (await poll(() => Boolean(document.body && document.body.innerText.includes(text)))) {
+      return `Text found: "${text}"`;
     }
 
-    throw toolError("wait_timeout", `Timeout waiting for text: "${params.text}"`, true, "retry");
+    throw toolError("wait_timeout", `Timeout waiting for text: "${text}"`, true, "retry");
   }
 
   return "Nothing to wait for";
@@ -257,6 +272,16 @@ export async function handleDialog(params: HandleDialogParams): Promise<string> 
     const suffix = result.alreadyHandled ? " (dialog was already auto-handled)" : "";
 
     return `${action} ${result.type} dialog: "${result.message}"${suffix}`;
+  }
+
+  // Nothing was captured yet, so the interceptor armed itself for the next
+  // dialog instead. Saying only "none found" would hide that the next
+  // alert, confirm or prompt is now answered automatically.
+  if (result.armed) {
+    const action = params.action === "accept" ? "accept" : "dismiss";
+    const seconds = Math.round((result.expiresInMs ?? 0) / 1000);
+
+    return `Armed to ${action} the next dialog within ${seconds} seconds (none was pending). Trigger it, then call handle_dialog again to read the result.`;
   }
 
   return "No pending dialog found";
