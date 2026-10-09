@@ -24,7 +24,7 @@ Logs, traces, screenshots, and tool results can contain sensitive page data: ret
 and share them according to your organization's policy. MCPSafari adds no telemetry
 backend; this does not constrain the MCP client's own collection.
 
-Report suspected vulnerabilities privately to support@epistates.com, following
+Report suspected vulnerabilities privately to info@eventra.app, following
 [SECURITY.md](../SECURITY.md). Public issues are suitable for reproducible defects
 with secrets and personal browsing data removed. No fixed response-time or security
 backport commitment is implied; releases and changelogs describe shipped fixes.

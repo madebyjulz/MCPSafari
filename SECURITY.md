@@ -8,7 +8,7 @@ Security support is provided for the latest released version on `main`.
 
 Please do **not** open public issues for suspected vulnerabilities.
 
-Instead, email [support@epistates.com](mailto:support@epistates.com) privately with:
+Instead, email [info@eventra.app](mailto:info@eventra.app) privately with:
 - A clear description of the issue
 - Reproduction steps / proof of concept
 - Potential impact
