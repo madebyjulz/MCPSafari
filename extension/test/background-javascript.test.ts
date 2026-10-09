@@ -31,7 +31,14 @@ function pageRealm(blocked: boolean): vm.Context {
   return page;
 }
 
-function backgroundHarness(cspBlockedWorlds: ReadonlyArray<"MAIN" | "ISOLATED"> = []) {
+/**
+ * `ran` collects the world of every run of the submitted code, so a test can
+ * tell how many times it was executed.
+ */
+function backgroundHarness(
+  cspBlockedWorlds: ReadonlyArray<"MAIN" | "ISOLATED"> = [],
+  ran: Array<"MAIN" | "ISOLATED" | undefined> = [],
+) {
   const api = fakeBrowser();
 
   api.tabs.get = async () => {
@@ -45,6 +52,8 @@ function backgroundHarness(cspBlockedWorlds: ReadonlyArray<"MAIN" | "ISOLATED"> 
     if (func === probeTabAccess || func === undefined) return [{ result: true }];
 
     const blocked = world !== undefined && cspBlockedWorlds.includes(world);
+
+    ran.push(world);
 
     return [{ result: await runInjected(func, args, pageRealm(blocked)) }];
   };
@@ -148,4 +157,49 @@ test("an ordinary page still runs in the page world with no note", async () => {
   const run = backgroundHarness();
 
   assert.equal(await valueOf(run("1 + 1")), "2");
+});
+
+test("code that throws a CSP error after running is not run a second time", async () => {
+  const ran: Array<"MAIN" | "ISOLATED" | undefined> = [];
+  const run = backgroundHarness([], ran);
+  // Compiles fine, does something, then hits a CSP refusal of its own: a
+  // blocked fetch or eval reads exactly like a compile-time refusal, but by
+  // now the code has had its effects.
+  const code = `globalThis.submitted = true; throw new Error(${JSON.stringify(CSP_REFUSAL)})`;
+
+  const message = await errorOf(run(code));
+
+  assert.match(message, /unsafe-eval/, "the run's own error is what is reported");
+  assert.deepEqual(ran, ["MAIN"], "retrying in the isolated world would repeat the side effects");
+});
+
+test("a run-time EvalError is reported, not retried", async () => {
+  const ran: Array<"MAIN" | "ISOLATED" | undefined> = [];
+  const run = backgroundHarness([], ran);
+
+  const message = await errorOf(run("await Promise.resolve(); throw new EvalError('late')"));
+
+  assert.match(message, /late/);
+  assert.deepEqual(ran, ["MAIN"]);
+});
+
+test("a returned object shaped like a failure is still just a value", async () => {
+  const ran: Array<"MAIN" | "ISOLATED" | undefined> = [];
+  const run = backgroundHarness([], ran);
+
+  // The evaluator's own outcome and the caller's value shared one channel, so
+  // these came back as a failure, or as a CSP refusal retried elsewhere.
+  assert.equal(await valueOf(run('({ __error: "not mine" })')), '{"__error":"not mine"}');
+  assert.equal(await valueOf(run("({ __cspBlocked: true })")), '{"__cspBlocked":true}');
+  assert.equal(await valueOf(run("({ ok: false, error: 'x' })")), '{"ok":false,"error":"x"}');
+  assert.deepEqual(ran, ["MAIN", "MAIN", "MAIN"]);
+});
+
+test("throwing an empty string is still a failure", async () => {
+  const run = backgroundHarness();
+
+  // Its message is "", which read as "no error" and reported success.
+  const response = await run('throw ""');
+
+  assert.equal(response.success, false);
 });

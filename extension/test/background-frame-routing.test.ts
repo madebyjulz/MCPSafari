@@ -36,9 +36,14 @@ function loadBackground(respond: Respond, frames: ReadonlyArray<FakeFrame> = [TO
     return respond(frameId, message);
   };
 
-  api.webNavigation.getAllFrames = async () => frames;
+  // Safari rejects a lookup that names no tab rather than picking one.
+  api.webNavigation.getAllFrames = async ({ tabId }) => {
+    if (!Number.isInteger(tabId)) throw new Error("Invalid tabId");
 
-  return { sent, request: launch(api).request };
+    return frames;
+  };
+
+  return { api, sent, request: launch(api).request };
 }
 
 const ok = (data: FakeContentReply["data"]): FakeContentReply => ({ data, error: null });
@@ -130,6 +135,36 @@ test("a frame that will not answer is named rather than left as a hole", async (
   assert.equal(iframeOf(tree)?.children, undefined);
 });
 
+test("a frame inside an unreachable one is still attached", async () => {
+  // A reachable frame hosted by one that would not answer: its <iframe> lives in
+  // the document nobody could read, so there is no host to hang it on.
+  const nested: FakeFrame = { frameId: 5, parentFrameId: 3, url: "https://nested.example/" };
+
+  const replies = new Map<number, FakeContentReply["data"]>([
+    [0, topTree()],
+    [5, { uid: "f5e1", tag: "body", children: [{ uid: "f5e2", tag: "button" }] }],
+  ]);
+
+  const { request } = loadBackground(
+    (frameId) => {
+      const tree = replies.get(frameId);
+
+      return tree ? ok(tree) : unreachable();
+    },
+    [TOP, EMBED, nested],
+  );
+
+  const tree: TreeNode = dataOf(await request("snapshot", { tabId: 1 }));
+
+  assert.deepEqual(tree.unreachableFrames, [{ frameId: 3, origin: "https://embed.example" }]);
+  // It used to vanish: not spliced, not counted, not listed.
+  assert.equal(tree.unmatchedFrames, 1);
+  assert.ok(
+    tree.children?.some((child) => child.uid === "f5e1"),
+    "the nested frame's content should hang off the nearest tree that was read",
+  );
+});
+
 test("a snapshot that reaches every frame says nothing about unreachable ones", async () => {
   const { request } = loadBackground((frameId) => ok(frameId === 0 ? topTree() : embedTree()));
 
@@ -167,6 +202,51 @@ test("find fans out and returns matches from every frame", async () => {
   assert.deepEqual(
     sent.map((message) => message.frameId),
     [0, 3],
+  );
+});
+
+test("a call that names no tab still reaches every frame", async () => {
+  const { request, sent } = loadBackground((frameId) =>
+    ok(frameId === 0 ? [{ uid: "f0e6", tag: "h1" }] : [{ uid: "f3e2", tag: "input" }]),
+  );
+
+  // Most calls name no tab. The frame lookup was handed that absence as is,
+  // Safari refused it, and only the top frame was ever asked.
+  const results: ReadonlyArray<TreeNode> = dataOf(await request("find", { text: "a" }));
+
+  assert.deepEqual(
+    results.map((result) => result.uid),
+    ["f0e6", "f3e2"],
+  );
+  assert.deepEqual(
+    sent.map((message) => [message.tabId, message.frameId]),
+    [
+      [1, 0],
+      [1, 3],
+    ],
+  );
+});
+
+test("every frame of one call is asked in the same tab", async () => {
+  const { api, request, sent } = loadBackground((frameId) => ok(frameId === 0 ? topTree() : embedTree()));
+  let lookups = 0;
+
+  // The user switching tabs while a snapshot walks the frames. Resolving the
+  // active tab per frame would stitch two pages into one tree.
+  api.tabs.query = async () => {
+    lookups += 1;
+
+    return [{ id: lookups, active: true, windowId: 1 }];
+  };
+
+  // Whatever tab is asked about, so this checks the sends on their own.
+  api.webNavigation.getAllFrames = async () => [TOP, EMBED];
+
+  await request("snapshot");
+
+  assert.deepEqual(
+    sent.map((message) => message.tabId),
+    [1, 1],
   );
 });
 

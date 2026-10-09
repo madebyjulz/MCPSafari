@@ -10,7 +10,7 @@ import { extensionError } from "../errors.ts";
 import { SelectedTab } from "../SelectedTab.ts";
 import { TabAccess } from "../TabAccess.ts";
 import { decodeParams } from "./params.ts";
-import { evaluateUserCode, readPageContext, type EvaluationFailure, type PageContext } from "../injected.ts";
+import { evaluateUserCode, readPageContext, type Evaluation, type PageContext } from "../injected.ts";
 import { requireTopFrameTarget, SCREENSHOT_TOP_FRAME_ONLY, windowOf } from "./tabs.ts";
 
 // ─── Screenshot Handler ─────────────────────────────────────────────
@@ -99,8 +99,10 @@ const capturePageContext = (tabId: number) =>
 
 // ─── JavaScript Execution Handler ────────────────────────────────────
 
-const isEvaluationFailure = (value: unknown): value is EvaluationFailure =>
-  Predicate.hasProperty(value, "__error") || Predicate.hasProperty(value, "__cspBlocked");
+// Safari hands back what the injected function returned, and nothing at all
+// when the frame produced no result, which reads as the code returning nothing.
+const isEvaluation = (value: unknown): value is Evaluation =>
+  Predicate.hasProperty(value, "ok") && Predicate.isBoolean(value.ok);
 
 const JavaScriptParams = Schema.Struct({ tabId: Schema.optionalKey(Schema.Int), code: Schema.String });
 
@@ -113,12 +115,18 @@ export const handleJavaScript = Effect.fn("javascript_tool")(function* (params: 
   const runIn = (world: "MAIN" | "ISOLATED") =>
     callBrowser((api) =>
       api.scripting.executeScript({ target: { tabId }, func: evaluateUserCode, args: [code], world }),
-    ).pipe(Effect.map((results) => (results && results.length > 0 ? results[0]?.result : undefined)));
+    ).pipe(
+      Effect.map((results): Evaluation => {
+        const result: unknown = results && results.length > 0 ? results[0]?.result : undefined;
+
+        return isEvaluation(result) ? result : { ok: true };
+      }),
+    );
 
   let result = yield* runIn("MAIN");
   let isolated = false;
 
-  if (isEvaluationFailure(result) && result.__cspBlocked) {
+  if (!result.ok && result.cspBlocked) {
     // The isolated world does not inherit the page's CSP and still shares
     // the DOM, so DOM-based code survives a strict script-src. Page
     // JavaScript globals do not exist there, which the caller is told.
@@ -126,7 +134,7 @@ export const handleJavaScript = Effect.fn("javascript_tool")(function* (params: 
     // nothing in the submitted code has run yet and side effects cannot double.
     const fallback = yield* runIn("ISOLATED");
 
-    if (isEvaluationFailure(fallback) && fallback.__cspBlocked) {
+    if (!fallback.ok && fallback.cspBlocked) {
       return yield* extensionError(
         "The page's Content Security Policy blocks evaluating code as a string, " +
           "in both the page world and the extension's isolated world. " +
@@ -139,9 +147,10 @@ export const handleJavaScript = Effect.fn("javascript_tool")(function* (params: 
     isolated = true;
   }
 
-  if (isEvaluationFailure(result) && result.__error) return yield* extensionError(result.__error);
+  // `throw ""` has an empty message and is a failure all the same.
+  if (!result.ok) return yield* extensionError(result.error || "The code threw an empty value");
 
-  const value = result !== undefined ? JSON.stringify(result) : "undefined";
+  const value = result.value !== undefined ? JSON.stringify(result.value) : "undefined";
 
   return isolated
     ? `${value}\n\n[Ran in the extension's isolated world: the page's CSP blocked evaluation in the page world. The DOM is shared, but page JavaScript globals such as window properties set by the site are not visible.]`

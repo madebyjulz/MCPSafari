@@ -44,31 +44,35 @@ export function goForward(): void {
   history.forward();
 }
 
-/** What `evaluateUserCode` hands back when the code did not produce a value. */
-export interface EvaluationFailure {
-  readonly __error: string;
-  readonly __cspBlocked?: true;
-}
+/**
+ * What `evaluateUserCode` hands back: always this envelope, never the caller's
+ * value on its own. Read off the value itself, an object the code returned
+ * with an `__error` key was taken for a failure and one with `__cspBlocked`
+ * was run a second time.
+ */
+export type Evaluation =
+  | { readonly ok: true; readonly value?: unknown }
+  | {
+      readonly ok: false;
+      readonly error: string;
+      /** The code was refused before any of it ran, so another world may run it. */
+      readonly cspBlocked?: true;
+    };
 
 // Injected into the target world, so it must not close over anything here.
-export function evaluateUserCode(code: string): Promise<unknown> | EvaluationFailure {
-  const describe = (e: unknown): EvaluationFailure => {
-    // Whatever was thrown, as text: its message when it has one.
+export function evaluateUserCode(code: string): Promise<Evaluation> | Evaluation {
+  // Whatever was thrown, as text: its message when it has one.
+  const describe = (e: unknown): string =>
     // oxlint-disable-next-line typescript/no-base-to-string -- a thrown value can be anything the page threw
-    const message = e && typeof e === "object" && "message" in e && e.message ? String(e.message) : String(e);
+    e && typeof e === "object" && "message" in e && e.message ? String(e.message) : String(e);
 
-    // A page whose script-src omits 'unsafe-eval' refuses to compile a
-    // string in its own realm, which is what new Function does here.
-    const blocked =
-      (typeof EvalError !== "undefined" && e instanceof EvalError) ||
-      /unsafe-eval|trusted-types-eval|Content Security Policy/i.test(message);
+  let fn: () => Promise<unknown>;
 
-    return blocked ? { __error: message, __cspBlocked: true } : { __error: message };
-  };
-
+  // Compiling only. A page whose script-src omits 'unsafe-eval' refuses to
+  // compile a string in its own realm, which is what new Function does here,
+  // and a refusal at this stage means none of the code has run.
   try {
     const expressionCode = String(code).trim().replace(/;+$/, "");
-    let fn: () => Promise<unknown>;
 
     try {
       // SAFETY: the source compiled is an async arrow called at once, so the
@@ -78,14 +82,33 @@ export function evaluateUserCode(code: string): Promise<unknown> | EvaluationFai
     } catch (e) {
       // A syntax error means it is not a bare expression; a CSP refusal
       // means neither form will compile, so do not retry it as one.
-      if (typeof EvalError !== "undefined" && e instanceof EvalError) return describe(e);
+      if (typeof EvalError !== "undefined" && e instanceof EvalError) {
+        return { ok: false, error: describe(e), cspBlocked: true };
+      }
+
       // SAFETY: as above.
       // oxlint-disable-next-line typescript/no-implied-eval -- as above
       fn = new Function(`return (async () => { ${code} })()`) as () => Promise<unknown>;
     }
-
-    return fn().catch((e: unknown) => describe(e));
   } catch (e) {
-    return describe(e);
+    const message = describe(e);
+
+    const blocked =
+      (typeof EvalError !== "undefined" && e instanceof EvalError) ||
+      /unsafe-eval|trusted-types-eval|Content Security Policy/i.test(message);
+
+    return blocked ? { ok: false, error: message, cspBlocked: true } : { ok: false, error: message };
+  }
+
+  // Running. The code may have had effects by the time anything is thrown, so
+  // nothing from here on is a CSP refusal, whatever its message says: one would
+  // send the code to the isolated world to run a second time.
+  try {
+    return fn().then(
+      (value): Evaluation => ({ ok: true, value }),
+      (e: unknown): Evaluation => ({ ok: false, error: describe(e) }),
+    );
+  } catch (e) {
+    return { ok: false, error: describe(e) };
   }
 }

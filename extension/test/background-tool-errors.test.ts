@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "vitest";
 
+import { SelectedTab } from "../src/background/SelectedTab.ts";
 import { fakeBrowser, launch, stopAll, type FakeContentReply } from "./helpers/fake-browser.ts";
 
 afterEach(stopAll);
@@ -83,4 +84,21 @@ test("resize_window uses the tab it was given rather than the current window", a
   // the user happens to be looking at, which on a two-window setup is not
   // the one the agent is driving.
   assert.deepEqual(windowUpdates[0], [7, { width: 900, height: 700 }]);
+});
+
+test("select_tab that cannot bring the tab forward does not pin it", async () => {
+  const api = fakeBrowser();
+
+  api.windows.update = async () => {
+    throw new Error("No window with id: 1");
+  };
+
+  const { harness, request } = launch(api);
+
+  const response = await request("select_tab", { tabId: 7 });
+
+  assert.equal(response.success, false);
+  // The pin was saved before the focus calls, so a failed select_tab still
+  // redirected every later call that names no tab to this one.
+  assert.equal(await harness.run(SelectedTab.use((selected) => selected.get)), null);
 });

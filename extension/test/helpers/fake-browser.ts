@@ -139,7 +139,9 @@ export const fakeBrowser = () => ({
     onRemoved: new FakeEvent<(tabId: number) => void>(),
   },
   webNavigation: {
-    getAllFrames: async (): Promise<ReadonlyArray<FakeFrame>> => [{ frameId: 0, parentFrameId: -1, url: TOP_URL }],
+    getAllFrames: async (_details: { readonly tabId: number }): Promise<ReadonlyArray<FakeFrame>> => [
+      { frameId: 0, parentFrameId: -1, url: TOP_URL },
+    ],
   },
   windows: {
     update: async (_windowId: number, _properties: { readonly focused?: boolean; readonly width?: number }) => {},

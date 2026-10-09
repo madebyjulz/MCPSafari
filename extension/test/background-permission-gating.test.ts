@@ -292,6 +292,58 @@ test("a refused tab is not probed again for every frame in one request", async (
   assert.equal(probes, 1);
 });
 
+test("calls that arrive while a probe is running share it", async () => {
+  // `wait` asks every frame at once, and each frame's send ensures access. The
+  // result was only remembered once a probe finished, so every one of them
+  // started its own and each put the same question to Safari.
+  let probes = 0;
+  let answer: () => void = () => {};
+
+  const answered = new Promise<void>((resolve) => {
+    answer = resolve;
+  });
+
+  const harness = loadBackground({
+    probe: async () => {
+      probes += 1;
+      await answered;
+
+      return [{ result: true }];
+    },
+  });
+
+  const pending = Promise.all([harness.readPage(), harness.readPage(), harness.readPage()]);
+
+  // Polled tightly: the probe's deadline is 30 ms in these tests.
+  await vi.waitFor(() => assert.ok(probes > 0), { interval: 1 });
+  await settle();
+  answer();
+
+  for (const response of await pending) assert.equal(response.success, true, response.error ?? "");
+
+  assert.equal(probes, 1);
+});
+
+test("a refusal reached by a shared probe reaches every caller", async () => {
+  let probes = 0;
+
+  const harness = loadBackground({
+    probe: async () => {
+      probes += 1;
+
+      return refused();
+    },
+  });
+
+  const responses = await Promise.all([harness.readPage(), harness.readPage()]);
+
+  assert.deepEqual(
+    responses.map((response) => response.errorCode),
+    ["permission_required", "permission_required"],
+  );
+  assert.equal(probes, 1);
+});
+
 test("a cached refusal still names the origin and the recovery", async () => {
   const harness = loadBackground({ probe: refused });
 

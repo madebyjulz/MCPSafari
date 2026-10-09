@@ -1,7 +1,7 @@
 // Whether the extension can reach a tab right now, and the deadlines that turn
 // Safari's website-access dialog into a named refusal instead of a timeout.
 
-import { Clock, Context, Duration, Effect, Layer } from "effect";
+import { Cache, Context, Duration, Effect, Layer } from "effect";
 import { Browser, callBrowser } from "./Browser.ts";
 import { BackgroundTiming } from "./config.ts";
 import { permissionRequired, type ToolError } from "./errors.ts";
@@ -25,12 +25,6 @@ export const originOfUrl = (url: string | undefined): string | null => {
     return null;
   }
 };
-
-/** A tab's last probe: when it landed, and what it threw if it failed. */
-interface ProbeResult {
-  readonly at: number;
-  readonly error: ToolError | null;
-}
 
 export class TabAccess extends Context.Service<
   TabAccess,
@@ -67,16 +61,6 @@ export class TabAccess extends Context.Service<
       const timing = yield* BackgroundTiming;
       const provideBrowser = Effect.provideService(Browser, browserApi);
 
-      /**
-       * tabId to its last probe.
-       *
-       * Failures are remembered too. Only successes were, so the blocked case, which
-       * is the one this cache exists for, probed again on every call: a frame search
-       * over eight frames paid a probe each and ran past the server's 30-second
-       * timeout, reporting the generic failure the gating was written to replace.
-       */
-      const probes = new Map<number, ProbeResult>();
-
       const originOfTab = Effect.fn("TabAccess.originOfTab")(function* (tabId: number) {
         return yield* callBrowser((api) => api.tabs.get(tabId)).pipe(
           Effect.timeout(timing.permissionProbe),
@@ -86,36 +70,45 @@ export class TabAccess extends Context.Service<
         );
       });
 
-      const ensure = Effect.fn("TabAccess.ensure")(function* (tabId: number) {
-        const cached = probes.get(tabId);
-
-        if (cached && (yield* Clock.currentTimeMillis) - cached.at < Duration.toMillis(timing.permissionCache)) {
-          if (cached.error) return yield* cached.error;
-
-          return;
-        }
-
+      const probe = Effect.fn("TabAccess.probe")(function* (tabId: number) {
         // Read the origin first. The probe below is what raises Safari's dialog, and
         // once that dialog is up `tabs.get` blocks on it as well, so asking
         // afterwards returns nothing and the refusal cannot name the site it is
         // about. Measured against real Safari, which is the only place this shows.
         const origin = yield* originOfTab(tabId);
 
-        const probe = yield* callBrowser((api) =>
-          api.scripting.executeScript({ target: { tabId }, func: probeTabAccess }),
-        ).pipe(
+        yield* callBrowser((api) => api.scripting.executeScript({ target: { tabId }, func: probeTabAccess })).pipe(
           Effect.timeout(timing.permissionProbe),
-          Effect.map(() => null),
           Effect.catchTags({
-            TimeoutError: () => Effect.succeed(permissionRequired(origin, true)),
-            ToolError: () => Effect.succeed(permissionRequired(origin, false)),
+            TimeoutError: () => Effect.fail(permissionRequired(origin, true)),
+            ToolError: () => Effect.fail(permissionRequired(origin, false)),
           }),
           provideBrowser,
         );
+      });
 
-        probes.set(tabId, { at: yield* Clock.currentTimeMillis, error: probe });
+      /**
+       * tabId to its last probe, or the one still running.
+       *
+       * Failures are remembered too. Only successes were, so the blocked case, which
+       * is the one this cache exists for, probed again on every call: a frame search
+       * over eight frames paid a probe each and ran past the server's 30-second
+       * timeout, reporting the generic failure the gating was written to replace.
+       *
+       * A probe still running is shared as well. The result used to be written
+       * only once a probe landed, so calls arriving together, which is what `wait`
+       * racing every frame does, each started their own and each put the question
+       * to Safari again. The cache also keeps a probe running while anyone still
+       * waits on it, so one caller giving up does not fail the rest.
+       */
+      const probes = yield* Cache.make({
+        lookup: probe,
+        capacity: Number.POSITIVE_INFINITY,
+        timeToLive: timing.permissionCache,
+      });
 
-        if (probe) return yield* probe;
+      const ensure = Effect.fn("TabAccess.ensure")(function* (tabId: number) {
+        yield* Cache.get(probes, tabId);
       });
 
       const withPermissionDeadline = <A, R>(
@@ -130,7 +123,7 @@ export class TabAccess extends Context.Service<
           }),
         );
 
-      const forget = (tabId: number) => Effect.sync(() => void probes.delete(tabId));
+      const forget = (tabId: number) => Cache.invalidate(probes, tabId);
 
       return TabAccess.of({ ensure, originOfTab, withPermissionDeadline, forget });
     }),

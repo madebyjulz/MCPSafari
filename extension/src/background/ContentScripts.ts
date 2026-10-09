@@ -123,11 +123,11 @@ export class ContentScripts extends Context.Service<
       const selectedTab = yield* SelectedTab;
       const provideBrowser = Effect.provideService(Browser, browserApi);
 
-      const listFrames = Effect.fn("ContentScripts.listFrames")(function* (tabId: number | undefined) {
-        // SAFETY: with no tab named, `undefined` goes through exactly as it always
-        // has; the call then fails and only the top frame is asked. A known gap,
-        // kept as-is by this port and fixed on its own.
-        const frames = yield* callBrowser((api) => api.webNavigation.getAllFrames({ tabId: tabId as number })).pipe(
+      // A missing (or 0) `tabId` means the tab a call that names none acts on.
+      const resolveTab = (tabId: number | undefined) => (tabId ? Effect.succeed(tabId) : selectedTab.activeTabId);
+
+      const listFrames = Effect.fn("ContentScripts.listFrames")(function* (tabId: number) {
+        const frames = yield* callBrowser((api) => api.webNavigation.getAllFrames({ tabId })).pipe(
           Effect.tapError((error) => Effect.logWarning("[MCPSafari] Frame enumeration failed:", error.message)),
           Effect.orElseSucceed(() => null),
           provideBrowser,
@@ -184,7 +184,7 @@ export class ContentScripts extends Context.Service<
         message: ContentMessage,
         frameId: number = 0,
       ) {
-        const resolvedTabId = tabId || (yield* selectedTab.activeTabId);
+        const resolvedTabId = yield* resolveTab(tabId);
 
         // Before anything that can block on Safari's permission dialog. `wait` and
         // other long actions are unaffected: the probe is separate and short, and
@@ -212,7 +212,7 @@ export class ContentScripts extends Context.Service<
       // A frame whose document refuses the content script (a sandboxed or already
       // unloaded one) must not fail the whole call, so misses are dropped.
       const collectFromFrames = Effect.fn("ContentScripts.collectFromFrames")(function* (
-        tabId: number | undefined,
+        tabId: number,
         message: ContentMessage,
       ) {
         const frames = yield* listFrames(tabId);
@@ -234,7 +234,7 @@ export class ContentScripts extends Context.Service<
       });
 
       const waitInAnyFrame = Effect.fn("ContentScripts.waitInAnyFrame")(function* (
-        tabId: number | undefined,
+        tabId: number,
         message: ContentMessage,
         frames: ReadonlyArray<FrameInfo>,
       ) {
@@ -263,7 +263,7 @@ export class ContentScripts extends Context.Service<
       // order and the first that resolves the target wins. The top frame is tried
       // first, which keeps single-frame pages behaving exactly as before.
       const sendToFirstMatchingFrame = Effect.fn("ContentScripts.sendToFirstMatchingFrame")(function* (
-        tabId: number | undefined,
+        tabId: number,
         message: ContentMessage,
       ) {
         const frames = yield* listFrames(tabId);
@@ -298,7 +298,7 @@ export class ContentScripts extends Context.Service<
       // each result on the <iframe> that hosts it, so an agent sees the page the way
       // a person does instead of a top frame with holes in it.
       const snapshotAcrossFrames = Effect.fn("ContentScripts.snapshotAcrossFrames")(function* (
-        tabId: number | undefined,
+        tabId: number,
         params: ContentParams,
       ) {
         const frames = yield* listFrames(tabId);
@@ -352,7 +352,11 @@ export class ContentScripts extends Context.Service<
         params: ContentParams,
       ) {
         const message: ContentMessage = { action, params };
-        const tabId = Predicate.isNumber(params["tabId"]) ? params["tabId"] : undefined;
+        // Resolved once, here. Passed on unresolved, the frame lookup was handed
+        // no tab, Safari refused it and only the top frame was ever asked; and
+        // each frame's send looked up the active tab again, so a user switching
+        // tabs mid-call split one snapshot or search across two pages.
+        const tabId = yield* resolveTab(Predicate.isNumber(params["tabId"]) ? params["tabId"] : undefined);
         const targetFrame = frameOfTarget(params);
 
         if (targetFrame !== null) return yield* send(tabId, message, targetFrame);
@@ -392,6 +396,26 @@ const collectFrameHosts = (node: SnapshotNode, hosts: Array<SnapshotNode> = []):
 };
 
 /**
+ * The trees of the frames below `frameId`, which has none of its own, each
+ * spliced in turn. Their hosts are in the document nobody could read, so they
+ * can only be attached higher up.
+ */
+const treesBelow = (
+  frameId: number,
+  childFrames: ReadonlyMap<number, ReadonlyArray<FrameInfo>>,
+  trees: ReadonlyMap<number, SnapshotNode>,
+): Array<SnapshotNode> =>
+  (childFrames.get(frameId) ?? []).flatMap((frame) => {
+    const subtree = trees.get(frame.frameId);
+
+    if (!subtree) return treesBelow(frame.frameId, childFrames, trees);
+
+    spliceFrames(subtree, frame.frameId, childFrames, trees);
+
+    return [subtree];
+  });
+
+/**
  * getAllFrames reports each frame's URL but not which element hosts it, so the
  * two are matched on the resolved src. Identical srcs are matched in document
  * order, and a frame whose host cannot be identified is attached to the parent
@@ -411,7 +435,13 @@ const spliceFrames = (
   for (const frame of children) {
     const subtree = trees.get(frame.frameId);
 
-    if (!subtree) continue;
+    // An unreachable frame is reported on its own, but whatever it hosts may
+    // have answered. Skipping the whole branch dropped those trees without a
+    // trace: not spliced, not counted, not listed.
+    if (!subtree) {
+      orphans.push(...treesBelow(frame.frameId, childFrames, trees));
+      continue;
+    }
 
     spliceFrames(subtree, frame.frameId, childFrames, trees);
 

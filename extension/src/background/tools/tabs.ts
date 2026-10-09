@@ -79,8 +79,6 @@ export const handleSelectTab = Effect.fn("select_tab")(function* (params: Conten
 
   const tab = yield* callBrowser((api) => api.tabs.get(tabId));
 
-  yield* selectedTab.set(tabId);
-
   // Optionally bring to front
   if (bringToFront !== false) {
     const windowId = yield* windowOf(tab);
@@ -88,6 +86,10 @@ export const handleSelectTab = Effect.fn("select_tab")(function* (params: Conten
     yield* callBrowser((api) => api.tabs.update(tabId, { active: true }));
     yield* callBrowser((api) => api.windows.update(windowId, { focused: true }));
   }
+
+  // Pinned only once the call has gone through. Pinned first, a select_tab
+  // that failed still redirected every later call that names no tab.
+  yield* selectedTab.set(tabId);
 
   return {
     id: tab.id,
