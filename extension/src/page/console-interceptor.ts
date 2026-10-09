@@ -33,6 +33,14 @@ function installConsoleInterceptor(): void {
           return value.slice(0, MAX_TEXT);
         }
 
+        // JSON has no form for these, and JSON.stringify returns undefined for
+        // them; render them as a console would.
+        if (value === undefined) return "undefined";
+
+        if (typeof value === "function") return value.name ? `[Function: ${value.name}]` : "[Function (anonymous)]";
+
+        if (typeof value === "symbol") return value.toString();
+
         return JSON.stringify(value, (_key, item) => {
           if (++visits > 128) throw new Error("capture budget");
 

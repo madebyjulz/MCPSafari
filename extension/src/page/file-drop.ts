@@ -11,7 +11,7 @@
  * Injected at document_start before page scripts run.
  */
 
-import { onContentMessage, postReply, type PageReply } from "./channel.ts";
+import { errorText, onContentMessage, postReply, type PageReply } from "./channel.ts";
 import type { DropParams, DropResult } from "./window.ts";
 
 /** A file entry whose file() answers with the item's own File instead of rejecting. */
@@ -50,8 +50,27 @@ function installFileDrop(): void {
     };
   }
 
+  // document.querySelector sees a single tree, so a drop zone inside a web
+  // component's shadow root would be missed; every open root is searched
+  // instead. Closed roots stay unreachable, as they are to the content script.
+  // The marker is compared as text, never spliced into a selector.
+  function markedTarget(marker: string): Element | null {
+    const roots: Array<Document | ShadowRoot> = [document];
+
+    // Roots found along the way are appended, and the loop reaches them too.
+    for (const root of roots) {
+      for (const element of root.querySelectorAll("*")) {
+        if (element.getAttribute("data-mcp-drop-target") === marker) return element;
+
+        if (element.shadowRoot) roots.push(element.shadowRoot);
+      }
+    }
+
+    return null;
+  }
+
   function dropFiles(params: DropParams): DropResult {
-    const target = document.querySelector(`[data-mcp-drop-target="${params.marker}"]`);
+    const target = markedTarget(params.marker);
 
     if (!target) throw new Error("Drop target not found in page");
 
@@ -97,9 +116,7 @@ function installFileDrop(): void {
       // missing fields fail inside the try and are reported as the error.
       reply = { data: dropFiles(message.params || ({} as DropParams)) };
     } catch (error) {
-      // SAFETY: only `.message` is read, as the hand-written script did; a
-      // thrown non-Error reports `undefined`.
-      reply = { error: (error as Error).message };
+      reply = { error: errorText(error) };
     }
 
     postReply(message.id, reply);

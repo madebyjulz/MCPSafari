@@ -37,13 +37,9 @@ function installNetworkInterceptor(): void {
   function recordTraceEvent(type: "xhr" | "fetch", request: RequestRecord): void {
     try {
       if (typeof window.__mcpRecordTraceEvent === "function") {
-        // SAFETY: the timestamp is passed through unchanged; it is null only
-        // for an XHR re-opened before loadend, which the recorder has always
-        // received as-is.
         window.__mcpRecordTraceEvent(
           `network.${type}`,
           {
-            type,
             method: request.method,
             url: request.url,
             status: request.status,
@@ -51,7 +47,7 @@ function installNetworkInterceptor(): void {
             duration: request.duration,
             error: request.error,
           },
-          request.timestamp as number,
+          request.timestamp,
         );
       }
     } catch {
@@ -116,71 +112,125 @@ function installNetworkInterceptor(): void {
   // oxlint-disable-next-line typescript/unbound-method -- kept to be called later with the patched call's own `this`.
   const XHRSend = XMLHttpRequest.prototype.send;
 
+  /** One send() of a request: what open() set up for it, and when it began. */
+  interface XhrCycle {
+    readonly meta: XhrMeta;
+    readonly startTime: number;
+  }
+
+  // Each request's sends still waiting for loadend, oldest first. A request
+  // can be re-opened and sent again before the previous send's loadend has
+  // fired, so each send keeps its own method, URL and start time rather than
+  // reading whatever open() set last. Kept off the request, out of the page's
+  // reach.
+  const pendingCycles = new WeakMap<XMLHttpRequest, Array<XhrCycle>>();
+
+  function recordXhr(xhr: XMLHttpRequest): void {
+    const cycle = pendingCycles.get(xhr)?.shift();
+
+    if (!cycle) return;
+
+    if (requests.length >= MAX_REQUESTS) requests.shift();
+
+    const request: RequestRecord = {
+      type: "xhr",
+      method: cycle.meta.method,
+      url: cycle.meta.url,
+      truncated: cycle.meta.truncated,
+      status: xhr.status,
+      statusText: xhr.statusText,
+      duration: Date.now() - cycle.startTime,
+      responseSize:
+        xhr.responseType === "" || xhr.responseType === "text" || xhr.responseType == null
+          ? (xhr.responseText?.length ?? 0)
+          : null,
+      timestamp: cycle.startTime,
+    };
+
+    requests.push(boundRecord(request));
+    recordTraceEvent("xhr", request);
+  }
+
   XMLHttpRequest.prototype.open = function (
     this: XMLHttpRequest,
     method: string,
     url: string | URL,
     ...args: OpenRest
   ) {
+    // open() ends an unfinished request without firing loadend, so its send
+    // will never complete. A finished one (readyState DONE: re-opened from a
+    // load or readystatechange handler) still fires its loadend afterwards.
+    const unfinished = this.readyState !== 4;
+    const result = XHROpen.call(this, method, url, ...args);
+
+    if (unfinished) pendingCycles.get(this)?.splice(0);
+
     this.__mcpMeta = {
       method: method.toUpperCase(),
       url: String(url).slice(0, 2048),
       truncated: String(url).length > 2048,
       type: "xhr",
-      startTime: null,
     };
 
-    return XHROpen.call(this, method, url, ...args);
+    return result;
   };
 
   XMLHttpRequest.prototype.send = function (this: XMLHttpRequest, body?: Document | XMLHttpRequestBodyInit | null) {
-    if (this.__mcpMeta) {
-      this.__mcpMeta.startTime = Date.now();
+    const meta = this.__mcpMeta;
 
-      this.addEventListener("loadend", () => {
-        if (requests.length >= MAX_REQUESTS) requests.shift();
+    if (!meta) return XHRSend.call(this, body);
 
-        // SAFETY: send() only listens for loadend on a request open() has
-        // tagged, and open() always replaces the tag rather than removing it.
-        const meta = this.__mcpMeta as XhrMeta;
+    let pending = pendingCycles.get(this);
 
-        const request: RequestRecord = {
-          type: "xhr",
-          method: meta.method,
-          url: meta.url,
-          truncated: meta.truncated,
-          status: this.status,
-          statusText: this.statusText,
-          // SAFETY: send() stamped startTime just before listening; a request
-          // re-opened since then has null here, which subtracts as 0 exactly as
-          // it did in the hand-written script.
-          duration: Date.now() - (meta.startTime as number),
-          responseSize:
-            this.responseType === "" || this.responseType === "text" || this.responseType == null
-              ? (this.responseText?.length ?? 0)
-              : null,
-          timestamp: meta.startTime,
-        };
-
-        requests.push(boundRecord(request));
-        recordTraceEvent("xhr", request);
-      });
+    if (!pending) {
+      pending = [];
+      pendingCycles.set(this, pending);
+      // One listener per request, however often it is reused: each loadend
+      // completes the oldest send still pending.
+      this.addEventListener("loadend", () => recordXhr(this));
     }
 
-    return XHRSend.call(this, body);
+    const cycle: XhrCycle = { meta, startTime: Date.now() };
+    pending.push(cycle);
+
+    try {
+      return XHRSend.call(this, body);
+    } catch (error) {
+      // A send() that throws (wrong state, or a failed synchronous request)
+      // fires no loadend.
+      const index = pending.indexOf(cycle);
+
+      if (index !== -1) pending.splice(index, 1);
+
+      throw error;
+    }
   };
 
   // ─── Fetch Interception ──────────────────────────────────────────
 
   const originalFetch = window.fetch;
 
-  window.fetch = async function (this: Window, input: RequestInfo | URL, init: RequestInit = {}) {
-    const method = (init.method || "GET").toUpperCase();
-    const url = typeof input === "string" ? input : input instanceof Request ? input.url : String(input);
+  window.fetch = async function (this: Window, input: RequestInfo | URL, init?: RequestInit | null) {
+    let method = "GET";
+    let url = "";
+
+    // Native fetch accepts a null init, and takes the method from a Request
+    // unless init names one. Describing the call must never break one the
+    // native fetch accepts, so a failure here only costs the record its detail.
+    try {
+      const request = input instanceof Request ? input : null;
+      method = (init?.method || request?.method || "GET").toUpperCase();
+      url = typeof input === "string" ? input : input instanceof Request ? input.url : String(input);
+    } catch {
+      /* recorded with what is known */
+    }
+
     const startTime = Date.now();
 
     try {
-      const response = await originalFetch.call(this, input, init);
+      // SAFETY: init is passed on exactly as the page gave it; native fetch
+      // treats null as it does an omitted init.
+      const response = await originalFetch.call(this, input, init as RequestInit | undefined);
 
       if (requests.length >= MAX_REQUESTS) requests.shift();
 

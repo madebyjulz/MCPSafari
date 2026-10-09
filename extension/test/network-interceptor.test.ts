@@ -30,16 +30,22 @@ interface StubResponse {
 
 type NetworkApi = Required<Pick<Window, "__mcpGetNetworkRequests">>;
 
+type StubFetch = (input: RequestInfo | URL, init?: RequestInit | null) => Promise<StubResponse>;
+
 interface StubWindow extends Partial<NetworkApi> {
   addEventListener(): void;
-  fetch: (input: string) => Promise<StubResponse>;
+  fetch: StubFetch;
   postMessage(): void;
   window?: StubWindow;
 }
 
 /** A captured record after a JSON round trip, with the fields these tests read. */
 interface NetworkReadout {
+  readonly method?: string;
   readonly url: string;
+  readonly status?: number;
+  readonly timestamp?: number | null;
+  readonly error?: string;
   readonly duration?: number;
   readonly timingRestricted?: boolean;
   readonly truncated?: boolean;
@@ -47,20 +53,61 @@ interface NetworkReadout {
 
 interface LoadOptions {
   readonly observerThrows?: boolean;
+  readonly fetch?: StubFetch;
 }
 
 interface Loaded {
+  /** This page's XMLHttpRequest, whose prototype the interceptor patched. */
+  readonly XMLHttpRequest: typeof FakeXhr;
   readonly observer: ObserverState;
   readonly window: StubWindow & NetworkApi;
 }
 
-function loadInterceptor({ observerThrows = false }: LoadOptions = {}): Loaded {
-  let observer: ObserverState | undefined;
+/**
+ * An XMLHttpRequest that answers when told to. Like the real one, open()
+ * ends an unfinished request without firing anything, and a finished one
+ * fires load and then loadend.
+ */
+class FakeXhr {
+  readyState = 0;
+  status = 0;
+  statusText = "";
+  responseType = "";
+  responseText = "";
+  /** Runs where a page's load handler would: after the response is in, before loadend. */
+  onload: (() => void) | null = null;
+  readonly #listeners: Array<() => void> = [];
 
-  class XMLHttpRequest {
-    open() {}
-    send() {}
+  open(_method: string, _url: string): void {
+    this.readyState = 1;
+    this.status = 0;
   }
+
+  send(): void {}
+
+  addEventListener(_type: "loadend", listener: () => void): void {
+    this.#listeners.push(listener);
+  }
+
+  /** Finishes the request in flight with `status`. */
+  respond(status: number): void {
+    this.readyState = 4;
+    this.status = status;
+    this.onload?.();
+
+    for (const listener of this.#listeners) listener();
+  }
+}
+
+function loadInterceptor({
+  observerThrows = false,
+  fetch = async (input) => ({
+    status: String(input instanceof Request ? input.url : input).includes("feed") ? 200 : 404,
+    statusText: "OK",
+  }),
+}: LoadOptions = {}): Loaded {
+  let observer: ObserverState | undefined;
+  const XMLHttpRequest = class extends FakeXhr {};
 
   class PerformanceObserver {
     constructor() {
@@ -82,10 +129,7 @@ function loadInterceptor({ observerThrows = false }: LoadOptions = {}): Loaded {
 
   const window: StubWindow = {
     addEventListener() {},
-    fetch: async (input) => ({
-      status: String(input).includes("feed") ? 200 : 404,
-      statusText: "OK",
-    }),
+    fetch,
     postMessage() {},
   };
 
@@ -93,6 +137,7 @@ function loadInterceptor({ observerThrows = false }: LoadOptions = {}): Loaded {
 
   vm.runInNewContext(source, {
     PerformanceObserver,
+    Request,
     URL,
     XMLHttpRequest,
     location: { origin: "https://example.test" },
@@ -102,7 +147,7 @@ function loadInterceptor({ observerThrows = false }: LoadOptions = {}): Loaded {
 
   // SAFETY: the script constructs its PerformanceObserver while loading, which
   // sets the observer state, and installs __mcpGetNetworkRequests on the stub.
-  return { observer: observer as ObserverState, window: window as StubWindow & NetworkApi };
+  return { XMLHttpRequest, observer: observer as ObserverState, window: window as StubWindow & NetworkApi };
 }
 
 test("resource reads expose buffered subresource timings without changing the default feed", () => {
@@ -321,4 +366,82 @@ test("resource URLs have a per-entry cap with a truncation marker", () => {
   const result = readNetwork(window, { type: "resource" });
   assert.equal(entryAt(result, 0).url.length, 2048);
   assert.equal(entryAt(result, 0).truncated, true);
+});
+
+test("fetch accepts a null init and records the method a Request carries", async () => {
+  const { window } = loadInterceptor();
+
+  await window.fetch("https://example.test/api/feed", null);
+  await window.fetch(new Request("https://example.test/api/items", { method: "POST" }));
+  await window.fetch(new Request("https://example.test/api/items", { method: "POST" }), { method: "put" });
+
+  assert.deepEqual(
+    readNetwork(window, { type: "fetch" }).map((r) => [r.method, r.url]),
+    [
+      ["GET", "https://example.test/api/feed"],
+      ["POST", "https://example.test/api/items"],
+      ["PUT", "https://example.test/api/items"],
+    ],
+  );
+});
+
+test("a fetch rejected with a non-Error rejects unchanged and records a string error", async () => {
+  const { window } = loadInterceptor({ fetch: () => Promise.reject(null) });
+
+  await assert.rejects(window.fetch("https://example.test/api/aborted"), (reason) => reason === null);
+
+  const [entry] = readNetwork(window, { type: "fetch" });
+  assert.equal(entry?.status, 0);
+  assert.equal(typeof entry?.error, "string");
+  assert.notEqual(entry?.error, "");
+});
+
+/** Checks a captured XHR started during [before, after] and has a duration that fits in it. */
+function assertTimedWithin(entry: NetworkReadout | undefined, before: number, after: number): void {
+  assert.equal(typeof entry?.timestamp, "number");
+  assert.ok((entry?.timestamp ?? 0) >= before && (entry?.timestamp ?? 0) <= after);
+  assert.ok((entry?.duration ?? -1) >= 0 && (entry?.duration ?? Infinity) <= after - before);
+}
+
+test("an XHR re-opened from its load handler records each open/send cycle once with its own timing", () => {
+  const { XMLHttpRequest, window } = loadInterceptor();
+  const before = Date.now();
+  const xhr = new XMLHttpRequest();
+
+  xhr.open("GET", "https://example.test/first");
+  xhr.send();
+  // The page reuses the request for the next call before loadend has fired.
+  xhr.onload = () => xhr.open("POST", "https://example.test/second");
+  xhr.respond(200);
+  xhr.onload = null;
+  xhr.send();
+  xhr.respond(201);
+
+  const after = Date.now();
+  const entries = readNetwork(window, { type: "xhr" });
+  assert.deepEqual(
+    entries.map((r) => [r.method, r.url]),
+    [
+      ["GET", "https://example.test/first"],
+      ["POST", "https://example.test/second"],
+    ],
+  );
+  assertTimedWithin(entries[0], before, after);
+  assertTimedWithin(entries[1], before, after);
+});
+
+test("an XHR re-opened mid-flight records only the request that finished", () => {
+  const { XMLHttpRequest, window } = loadInterceptor();
+  const xhr = new XMLHttpRequest();
+
+  xhr.open("GET", "https://example.test/abandoned");
+  xhr.send();
+  xhr.open("POST", "https://example.test/sent");
+  xhr.send();
+  xhr.respond(200);
+
+  assert.deepEqual(
+    readNetwork(window, { type: "xhr" }).map((r) => [r.method, r.url, r.status]),
+    [["POST", "https://example.test/sent", 200]],
+  );
 });

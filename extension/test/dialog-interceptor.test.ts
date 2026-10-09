@@ -18,12 +18,24 @@ interface DialogReadout {
   readonly truncated?: boolean;
 }
 
+/** What the page posts back to the content script. */
+interface PageReply {
+  readonly id: string;
+  readonly data?: DialogReadout;
+  readonly error?: string;
+}
+
+interface StubMessageEvent {
+  readonly source: StubWindow;
+  readonly data: { readonly source: string; readonly id: string; readonly type: string; readonly params: DialogParams };
+}
+
 interface StubWindow {
   alert: StubDialog;
   confirm: StubDialog;
   prompt: StubDialog;
-  addEventListener(): void;
-  postMessage(): void;
+  addEventListener(type: string, listener: (event: StubMessageEvent) => void): void;
+  postMessage(reply: PageReply): void;
 }
 
 interface InstalledWindow extends StubWindow {
@@ -34,11 +46,23 @@ interface Harness {
   readonly window: InstalledWindow;
   readonly native: Readonly<Record<"alert" | "confirm" | "prompt", StubDialog>>;
   readonly expire: () => void;
+  /** Posts a handle_dialog request as the content script does and returns the page's reply. */
+  readonly request: (params: DialogParams) => PageReply;
 }
 
 function harness(): Harness {
   const native = { alert: () => undefined, confirm: () => "native", prompt: () => "native" };
-  const window: StubWindow = { ...native, addEventListener() {}, postMessage() {} };
+  const replies: Array<PageReply> = [];
+  let onMessage: ((event: StubMessageEvent) => void) | undefined;
+
+  const window: StubWindow = {
+    ...native,
+    addEventListener(type, listener) {
+      if (type === "message") onMessage = listener;
+    },
+    postMessage: (reply) => replies.push(reply),
+  };
+
   let expire: (() => void) | undefined;
   vm.runInNewContext(source, {
     window,
@@ -49,8 +73,17 @@ function harness(): Harness {
     clearTimeout() {},
   });
 
+  const request = (params: DialogParams): PageReply => {
+    onMessage?.({ source: window, data: { source: "MCPSafariContent", id: "req", type: "handle_dialog", params } });
+    const reply = replies.pop();
+
+    if (reply === undefined) throw new TypeError("the page posted no reply");
+
+    return reply;
+  };
+
   // SAFETY: running the script installed __mcpHandleDialog on the stub window.
-  return { window: window as InstalledWindow, native, expire: () => expire!() };
+  return { window: window as InstalledWindow, native, expire: () => expire!(), request };
 }
 
 test("ordinary browsing keeps native dialogs and one armed dialog restores them", () => {
@@ -84,4 +117,22 @@ test("captured dialog text is bounded and reports truncation", () => {
   assert.equal(result.message?.length, 4096);
   assert.equal(result.defaultValue?.length, 4096);
   assert.equal(result.truncated, true);
+});
+
+test("a handler that throws still answers the content script with an error", () => {
+  const { window, request } = harness();
+
+  window.__mcpHandleDialog = () => {
+    throw new Error("replaced by the page");
+  };
+
+  assert.equal(request({ action: "accept" }).error, "replaced by the page");
+
+  window.__mcpHandleDialog = () => {
+    throw null;
+  };
+
+  const reply = request({ action: "accept" });
+  assert.equal(typeof reply.error, "string");
+  assert.notEqual(reply.error, "");
 });

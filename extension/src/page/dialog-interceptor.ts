@@ -1,6 +1,6 @@
 /** Dialog automation is opt-in: handle_dialog arms one dialog for 30 seconds. */
 
-import { onContentMessage, postReply } from "./channel.ts";
+import { errorText, onContentMessage, postReply } from "./channel.ts";
 import type { CapturedDialog, DialogParams, DialogResult, DialogType } from "./window.ts";
 
 /**
@@ -131,7 +131,13 @@ function installDialogInterceptor(): void {
   onContentMessage<DialogParams>((message) => {
     if (message.type !== "handle_dialog") return;
 
-    postReply(message.id, { data: window.__mcpHandleDialog(message.params || {}) });
+    // The page can replace __mcpHandleDialog; a failure is still an answer,
+    // so the content script is not left waiting out its timeout.
+    try {
+      postReply(message.id, { data: window.__mcpHandleDialog(message.params || {}) });
+    } catch (error) {
+      postReply(message.id, { error: errorText(error) });
+    }
   });
 }
 

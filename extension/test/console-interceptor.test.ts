@@ -8,7 +8,7 @@ const source = builtScript("console-interceptor.js");
 
 type ConsoleApi = Required<Pick<Window, "__mcpGetConsoleMessages">>;
 
-type StubLog = (...data: ReadonlyArray<string>) => void;
+type StubLog = (...data: ReadonlyArray<unknown>) => void;
 
 interface StubConsole {
   log: StubLog;
@@ -125,4 +125,21 @@ test("capture bounds large arguments and rejects pathological filters", () => {
   assert.throws(() => window.__mcpGetConsoleMessages({ pattern: "(a+)+$" }), /Unsupported filter/);
   assert.throws(() => window.__mcpGetConsoleMessages({ pattern: "a*a*Z" }), /Unsupported filter/);
   assert.throws(() => window.__mcpGetConsoleMessages({ pattern: "[" }));
+});
+
+test("undefined, functions and symbols are captured as readable text", () => {
+  const { console: patched, window } = loadInterceptor();
+
+  function onReady(): void {}
+
+  patched.log(undefined);
+  patched.log("value:", undefined);
+  patched.log(onReady);
+  patched.log(() => {});
+  patched.log(Symbol("tag"));
+
+  assert.deepEqual(
+    Array.from(window.__mcpGetConsoleMessages({}), (m) => m.text),
+    ["undefined", "value: undefined", "[Function: onReady]", "[Function (anonymous)]", "Symbol(tag)"],
+  );
 });

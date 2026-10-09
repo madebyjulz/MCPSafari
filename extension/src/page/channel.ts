@@ -35,10 +35,21 @@ export function postReply<Data>(id: string, reply: PageReply<Data>): void {
   window.postMessage({ source: PAGE_MESSAGE_SOURCE, id, ...reply }, "*");
 }
 
-/** The error text a failed request reports: the error's message, or the thrown value itself. */
+/**
+ * The error text a failed request reports: the error's message, or the thrown
+ * value itself. Never empty and never throws, whatever page code threw: the
+ * content script reads a missing or empty `error` as success.
+ */
 export function errorText(cause: unknown): string {
-  // SAFETY: only `.message` is read, and reading it off any thrown value
-  // behaves as `err.message` did in the hand-written scripts (including
-  // throwing for null or undefined).
-  return String((cause as { readonly message?: string }).message || cause);
+  try {
+    // SAFETY: only `.message` is read, through optional chaining, so null and
+    // undefined fall through to their own string form.
+    const text = String((cause as { readonly message?: unknown } | null | undefined)?.message || cause);
+
+    if (text) return text;
+  } catch {
+    // A message getter or toString that throws leaves only the fallback.
+  }
+
+  return "Page script failed without an error message";
 }

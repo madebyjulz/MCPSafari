@@ -112,7 +112,7 @@ export interface RequestRecord extends NetworkRecord {
   readonly statusText: string;
   readonly duration: number;
   readonly responseSize?: number | null;
-  readonly timestamp: number | null;
+  readonly timestamp: number;
   readonly error?: string;
 }
 
@@ -140,13 +140,12 @@ export interface NetworkParams {
   readonly clear?: boolean;
 }
 
-/** What the XMLHttpRequest patch remembers between open() and loadend. */
+/** What the XMLHttpRequest patch remembers from open() for the next send(). */
 export interface XhrMeta {
   readonly method: string;
   readonly url: string;
   readonly truncated: boolean;
   readonly type: "xhr";
-  startTime: number | null;
 }
 
 // ─── File drop ─────────────────────────────────────────────────────────

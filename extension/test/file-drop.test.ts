@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import vm from "node:vm";
+import { type Document, type Element, type ShadowRoot, Window as HappyWindow } from "happy-dom";
 import { test } from "vitest";
 
 import type { DropParams } from "../src/page/window.ts";
@@ -93,22 +94,35 @@ class FakeEvent {
 
 interface FakeTarget {
   readonly events: Array<FakeEvent>;
-  scrollIntoView(): void;
-  getBoundingClientRect(): { left: number; top: number; width: number; height: number };
-  dispatchEvent(event: FakeEvent): boolean;
 }
 
-function makeTarget(): FakeTarget {
-  return {
-    events: [],
+/** A fresh page for the drop to search. */
+function newPage(): Document {
+  return new HappyWindow().document;
+}
+
+/**
+ * Adds a drop zone marked with `marker` under `parent`, as the content script
+ * marks one, that records the events dispatched on it.
+ */
+function placeTarget(parent: Element | ShadowRoot, marker = "marker-1"): FakeTarget {
+  const element = parent.ownerDocument.createElement("div");
+  element.setAttribute("data-mcp-drop-target", marker);
+  parent.appendChild(element);
+
+  const events: Array<FakeEvent> = [];
+
+  Object.assign(element, {
     scrollIntoView() {},
     getBoundingClientRect: () => ({ left: 10, top: 20, width: 100, height: 50 }),
-    dispatchEvent(event) {
-      this.events.push(event);
+    dispatchEvent(event: FakeEvent) {
+      events.push(event);
 
       return true;
     },
-  };
+  });
+
+  return { events };
 }
 
 /** The `index`th event the target received; a missing one throws, as reading a field off it would. */
@@ -152,15 +166,16 @@ interface StubWindow {
 }
 
 interface LoadOptions {
-  readonly target?: FakeTarget;
-  readonly DataTransfer?: typeof FakeDataTransfer;
+  readonly document: Document;
+  readonly DataTransfer?: new () => FakeDataTransfer;
 }
 
-// Loads file-drop.js and returns a function that posts a bridge request and
-// resolves with the page's reply.
-function loadFileDrop({ target, DataTransfer = FakeDataTransfer }: LoadOptions = {}): (
-  params: Partial<DropParams>,
-) => PageReply {
+// Loads file-drop.js into `document` and returns a function that posts a
+// bridge request and resolves with the page's reply.
+function loadFileDrop({
+  document,
+  DataTransfer = FakeDataTransfer,
+}: LoadOptions): (params: Partial<DropParams>) => PageReply {
   let onMessage: ((event: StubMessageEvent) => void) | undefined;
   const replies: Array<PageReply> = [];
 
@@ -173,7 +188,7 @@ function loadFileDrop({ target, DataTransfer = FakeDataTransfer }: LoadOptions =
 
   vm.runInNewContext(source, {
     window,
-    document: { querySelector: (selector: string) => (selector.includes("marker-1") ? target : null) },
+    document,
     DataTransfer,
     DragEvent: FakeEvent,
   });
@@ -193,8 +208,9 @@ const PNG = new File([new Uint8Array([137, 80, 78, 71])], "shot.png", { type: "i
 const TXT = new File(["hi"], "note.txt", { type: "text/plain" });
 
 test("drop dispatches dragenter, dragover, drop with entries that resolve the files", async () => {
-  const target = makeTarget();
-  const request = loadFileDrop({ target });
+  const page = newPage();
+  const target = placeTarget(page.body);
+  const request = loadFileDrop({ document: page });
 
   const reply = request({ marker: "marker-1", files: [PNG, TXT] });
 
@@ -228,7 +244,8 @@ test("drop dispatches dragenter, dragover, drop with entries that resolve the fi
 });
 
 test("drop still dispatches when the native entry API throws", () => {
-  const target = makeTarget();
+  const page = newPage();
+  const target = placeTarget(page.body);
 
   class ThrowingDataTransfer extends FakeDataTransfer {
     constructor() {
@@ -238,7 +255,7 @@ test("drop still dispatches when the native entry API throws", () => {
     }
   }
 
-  const request = loadFileDrop({ target, DataTransfer: ThrowingDataTransfer });
+  const request = loadFileDrop({ document: page, DataTransfer: ThrowingDataTransfer });
 
   const reply = request({ marker: "marker-1", files: [PNG] });
 
@@ -251,7 +268,8 @@ test("drop still dispatches when the native entry API throws", () => {
 });
 
 test("drop leaves a null entry alone", () => {
-  const target = makeTarget();
+  const page = newPage();
+  const target = placeTarget(page.body);
 
   class NullEntryDataTransfer extends FakeDataTransfer {
     constructor() {
@@ -259,7 +277,7 @@ test("drop leaves a null entry alone", () => {
     }
   }
 
-  const request = loadFileDrop({ target, DataTransfer: NullEntryDataTransfer });
+  const request = loadFileDrop({ document: page, DataTransfer: NullEntryDataTransfer });
 
   request({ marker: "marker-1", files: [PNG] });
 
@@ -267,11 +285,69 @@ test("drop leaves a null entry alone", () => {
 });
 
 test("drop reports a missing target instead of dispatching", () => {
-  const target = makeTarget();
-  const request = loadFileDrop({ target });
+  const page = newPage();
+  const target = placeTarget(page.body);
+  const request = loadFileDrop({ document: page });
 
   const reply = request({ marker: "other", files: [PNG] });
 
   assert.equal(reply.error, "Drop target not found in page");
   assert.equal(target.events.length, 0);
+});
+
+test("drop finds a target inside nested open shadow roots", () => {
+  const page = newPage();
+  const outerHost = page.createElement("div");
+  page.body.appendChild(outerHost);
+  const innerHost = page.createElement("div");
+  outerHost.attachShadow({ mode: "open" }).appendChild(innerHost);
+  const target = placeTarget(innerHost.attachShadow({ mode: "open" }));
+  const request = loadFileDrop({ document: page });
+
+  const reply = request({ marker: "marker-1", files: [PNG] });
+
+  assert.equal(reply.error, undefined);
+  assert.equal(reply.data?.dropped, 1);
+  assert.deepEqual(
+    target.events.map((event) => event.type),
+    ["dragenter", "dragover", "drop"],
+  );
+});
+
+test("a marker is matched as text, never parsed as a selector", () => {
+  const page = newPage();
+  const decoy = placeTarget(page.body, "decoy");
+  const quoted = placeTarget(page.body, 'say "hi"');
+  const request = loadFileDrop({ document: page });
+
+  const injected = request({ marker: 'nope"],[data-mcp-drop-target="decoy', files: [PNG] });
+
+  assert.equal(injected.error, "Drop target not found in page");
+  assert.equal(decoy.events.length, 0);
+
+  assert.equal(request({ marker: 'say "hi"', files: [PNG] }).data?.dropped, 1);
+  assert.equal(quoted.events.length, 3);
+});
+
+test("a thrown non-Error is still reported as a string error", () => {
+  const page = newPage();
+  placeTarget(page.body);
+
+  for (const thrown of ["transfer refused", undefined, null]) {
+    class RefusingDataTransfer extends FakeDataTransfer {
+      constructor() {
+        super();
+        throw thrown;
+      }
+    }
+
+    const reply = loadFileDrop({ document: page, DataTransfer: RefusingDataTransfer })({
+      marker: "marker-1",
+      files: [PNG],
+    });
+
+    assert.equal(reply.data, undefined);
+    assert.equal(typeof reply.error, "string");
+    assert.notEqual(reply.error, "");
+  }
 });

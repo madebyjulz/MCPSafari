@@ -31,6 +31,13 @@ type MutationDetail = {
 function installTraceInterceptor(): void {
   const MAX_EVENTS = 1000;
   const URL_POLL_MS = 100;
+  // A trace normally ends with stop_trace. One that never gets it (the tool
+  // call failed, or the server went away) would keep the URL poll and the DOM
+  // observer running for the life of the page, so it expires after this long.
+  // The server bounds a real trace well below it: the action's bridge timeout
+  // (30 s), a post-action wait (at most 5 min) and the trace duration (at most
+  // 30 s) come to about 6 minutes.
+  const MAX_TRACE_MS = 10 * 60_000;
   const traces = new Map<string, Trace>();
   let traceCounter = 0;
   let urlTimer: ReturnType<typeof setInterval> | null = null;
@@ -104,11 +111,13 @@ function installTraceInterceptor(): void {
       return;
     }
 
+    // The caller's detail goes first so it cannot overwrite the event's own
+    // type or timing.
     trace.events.push({
+      ...detail,
       type,
       at,
       offset: at - trace.startTime,
-      ...detail,
     });
   }
 
@@ -135,11 +144,14 @@ function installTraceInterceptor(): void {
     if (urlTimer !== null) return;
 
     urlTimer = setInterval(() => {
+      const at = now();
+
+      for (const [id, trace] of traces) {
+        if (at - trace.startTime >= MAX_TRACE_MS) traces.delete(id);
+      }
+
       if (traces.size === 0) {
-        // SAFETY: this callback only runs while its own interval is installed,
-        // and urlTimer holds that interval until it is cleared.
-        clearInterval(urlTimer as ReturnType<typeof setInterval>);
-        urlTimer = null;
+        cleanupIfIdle();
 
         return;
       }
@@ -263,7 +275,7 @@ function installTraceInterceptor(): void {
         endUrl: location.href,
         truncated: false,
         events: [],
-        error: "Trace not found. The page may have navigated or reloaded.",
+        error: `Trace not found. The page may have navigated or reloaded, or the trace expired after ${MAX_TRACE_MS / 60_000} minutes without stop_trace.`,
       };
     }
 
