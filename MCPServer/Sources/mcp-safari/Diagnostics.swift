@@ -215,7 +215,8 @@ enum Doctor {
     static func inspect(
         paths: DoctorPaths = .system,
         port: UInt16 = 8089,
-        registration: ExtensionRegistration = .unknown
+        registration: ExtensionRegistration = .unknown,
+        registeredCopies: [String]? = nil
     ) -> DoctorReport {
         let extensionRegistered = registration.isRegistered
         let registeredExtensionPath = registration.bundlePath
@@ -323,6 +324,30 @@ enum Doctor {
             ))
         }
 
+        // Every app Xcode builds is registered with LaunchServices on the spot,
+        // `xcodebuild install` into a staging directory included, so each build
+        // outside /Applications leaves another copy of the extension behind.
+        // Safari lists every copy in its settings and runs each one that is
+        // enabled, so two extensions connect to the server at once, under the
+        // same bundle identifier, and requests and profile handles land on
+        // whichever answers. `extension_location` cannot see this: PlugInKit
+        // names one copy unless asked for duplicates.
+        if let registeredCopies {
+            let duplicated = registeredCopies.count > 1
+            checks.append(.init(
+                code: "extension_duplicates",
+                status: duplicated ? .error : .ok,
+                message: duplicated
+                    ? "Safari has \(registeredCopies.count) copies of the extension registered, and runs every "
+                      + "one that is enabled: \(registeredCopies.joined(separator: ", "))."
+                    : "Safari has one copy of the extension registered.",
+                recovery: duplicated
+                    ? "Unregister every copy outside \(paths.appURL.path) with `pluginkit -r <path>`, delete "
+                      + "those builds, and install with `pnpm app:install`, which leaves no other copy."
+                    : nil
+            ))
+        }
+
         let tokenURL = paths.tokenDirectoryURL.appendingPathComponent(String(port))
         if fileManager.fileExists(atPath: tokenURL.path) {
             let permissions = (try? fileManager.attributesOfItem(atPath: tokenURL.path)[.posixPermissions] as? NSNumber)?.intValue
@@ -363,32 +388,42 @@ enum Doctor {
     /// how the extension Safari actually loaded gets identified, and that is not
     /// always the one inside the installed app.
     static func extensionRegistration() -> ExtensionRegistration {
-        guard let output = pluginkitOutput() else { return .unknown }
+        guard let output = pluginkitOutput(duplicates: false) else { return .unknown }
         guard output.contains(MCPSafariProduct.extensionBundleIdentifier) else {
             return .notRegistered
         }
         return .registered(bundlePath: parseExtensionPath(from: output))
     }
 
+    /// Every physical copy PlugInKit knows about, not only the one it would
+    /// load. A separate reading from `extensionRegistration()` because `-D`
+    /// output does not say which copy that is.
+    static func registeredExtensionCopies() -> [String]? {
+        pluginkitOutput(duplicates: true).map(parseExtensionPaths(from:))
+    }
+
+    static func parseExtensionPath(from output: String) -> String? {
+        parseExtensionPaths(from: output).first
+    }
+
     /// The path is the tail of the line, after the date, and can contain spaces
     /// ("MCPSafari Extension.appex"), so it is taken from the first path
     /// separator rather than by splitting on whitespace.
-    static func parseExtensionPath(from output: String) -> String? {
-        for line in output.split(separator: "\n") {
+    static func parseExtensionPaths(from output: String) -> [String] {
+        output.split(separator: "\n").compactMap { line in
             guard line.contains(MCPSafariProduct.extensionBundleIdentifier),
                   let start = line.firstIndex(of: "/")
-            else { continue }
+            else { return nil }
             let path = line[start...].trimmingCharacters(in: .whitespacesAndNewlines)
-            if !path.isEmpty { return path }
+            return path.isEmpty ? nil : path
         }
-        return nil
     }
 
-    private static func pluginkitOutput() -> String? {
+    private static func pluginkitOutput(duplicates: Bool) -> String? {
         let process = Process()
         let output = Pipe()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/pluginkit")
-        process.arguments = ["-m", "-v", "-i", MCPSafariProduct.extensionBundleIdentifier]
+        process.arguments = ["-m"] + (duplicates ? ["-D"] : []) + ["-v", "-i", MCPSafariProduct.extensionBundleIdentifier]
         process.standardOutput = output
         process.standardError = Pipe()
 

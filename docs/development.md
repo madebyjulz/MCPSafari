@@ -20,7 +20,15 @@ pnpm install && pnpm check
   CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO)
 ```
 
-The extension build above matches CI and checks compilation. Xcode builds the extension's TypeScript itself, through a "Bundle extension scripts" build phase in both targets, so pnpm must be installed where Xcode can find it (Homebrew's or pnpm's standard locations). To install a development build, open `MCPSafari/MCPSafari.xcodeproj` in Xcode, configure signing for your team, and build and run the app. Enable its extension in Safari settings.
+The extension build above matches CI and checks compilation. Xcode builds the extension's TypeScript itself, through a "Bundle extension scripts" build phase in both targets, so pnpm must be installed where Xcode can find it (Homebrew's or pnpm's standard locations). To install a build, configure signing for your team in `MCPSafari/MCPSafari.xcodeproj`, then run `pnpm app:install` and enable the extension in Safari settings.
+
+### One copy of the extension, or bugs
+
+Every app Xcode builds is registered with LaunchServices the moment the build finishes: a Run from Xcode, the `xcodebuild` command above, and `xcodebuild install` into a staging `DSTROOT` alike. Safari lists every registered copy of the extension in its settings, as another "MCPSafari Extension", and runs each one that is enabled. Two copies means two extensions connecting to the server under one bundle identifier, so requests, tab handles and profile selection land on whichever answers, and the copy outside `/Applications` can be any version. Deleting a build does not unregister it.
+
+- Install with `pnpm app:install`. It builds the server and the app, copies the app into `/Applications`, unregisters and deletes its own build, unregisters any other copy it finds, and fails unless the one in `/Applications` is the only one left.
+- After building any other way, unregister the result: `pluginkit -r "<build>/MCPSafari.app/Contents/PlugIns/MCPSafari Extension.appex"`, then delete it. `pluginkit -m -D -v -i app.eventra.MCPSafari.Extension` lists every copy; without `-D` it names only the one it would load.
+- `mcp-safari doctor` fails its `extension_duplicates` check while more than one copy is registered.
 
 Point your MCP client at `MCPServer/.build/debug/MCPSafari` using an absolute path. Add `--verbose` to its arguments for debug logs. For a release server binary:
 
@@ -96,6 +104,7 @@ The release, audit, and MCP contract tooling CI runs, in TypeScript that Node 24
 - `prepare-release.ts` — `qualify <tag>`, `notes <tag> <output>`, `artifacts <directory>`: the release gates and checksums
 - `audit-swiftpm-osv.ts` — checks `Package.resolved` pins against OSV.dev
 - `smoke-mcp.ts` — the stdio handshake against a built server binary
+- `install-app.ts` — `pnpm app:install`: builds the server and installs `MCPSafari.app` as the only registered copy of the extension (see [one copy of the extension](#one-copy-of-the-extension-or-bugs))
 - `test/mcp-results.test.ts` — every tool's result contract against the real server and a fixture extension; `pnpm test:mcp`, after `swift build`
 
 It uses the same pnpm, oxfmt, oxlint, TypeScript and Vitest setup as `extension/`; `pnpm check` runs everything but the MCP contract test.

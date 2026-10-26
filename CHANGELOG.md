@@ -1,6 +1,9 @@
 # Changelog
 
 ## [Unreleased]
+### Added
+- `pnpm app:install` builds the server and installs `MCPSafari.app` in `/Applications` as the only registered copy of the extension. Every app Xcode builds is registered on the spot, so a Run from Xcode or a scratch `xcodebuild` left a second "MCPSafari Extension" in Safari's settings, and Safari runs every copy that is enabled: two extensions on one server, under one bundle identifier, with calls landing on either. The script unregisters and deletes its own build, unregisters any other copy, and fails unless one is left.
+- `mcp-safari doctor` fails its new `extension_duplicates` check while more than one copy of the extension is registered, and names each one. `extension_location` could not see this: PlugInKit names a single copy unless asked for duplicates, so the doctor reported a clean install with two extensions connected.
 
 ## [0.4.1] - 2026-10-26
 ### Changed

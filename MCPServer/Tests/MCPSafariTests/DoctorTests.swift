@@ -355,6 +355,52 @@ struct DoctorTests {
         #expect(Doctor.parseExtensionPath(from: " (0 plug-ins)\n") == nil)
     }
 
+    /// Every Xcode build registers its app, so a build outside /Applications
+    /// leaves a second copy that Safari lists and runs alongside the installed
+    /// one. PlugInKit names only one copy unless asked for duplicates, which is
+    /// why `extension_location` passed with two extensions connected.
+    @Test func doctorFailsWhenSafariHasMoreThanOneCopyRegistered() {
+        let installed = "/Applications/MCPSafari.app/Contents/PlugIns/MCPSafari Extension.appex"
+        let stray = "/tmp/build/Release/MCPSafari.app/Contents/PlugIns/MCPSafari Extension.appex"
+        let paths = DoctorPaths(
+            executableURL: URL(fileURLWithPath: "/opt/homebrew/bin/mcp-safari"),
+            appURL: URL(fileURLWithPath: "/Applications/MCPSafari.app"),
+            tokenDirectoryURL: URL(fileURLWithPath: "/nonexistent/tokens")
+        )
+
+        let duplicated = Doctor.inspect(
+            paths: paths,
+            registration: .registered(bundlePath: installed),
+            registeredCopies: [installed, stray]
+        )
+        let flagged = duplicated.checks.first { $0.code == "extension_duplicates" }
+        #expect(flagged?.status == .error)
+        #expect(flagged?.message.contains(stray) == true)
+        #expect(flagged?.recovery?.contains("pnpm app:install") == true)
+        #expect(duplicated.overall == .error)
+
+        let single = Doctor.inspect(paths: paths, registration: .registered(bundlePath: installed), registeredCopies: [installed])
+        #expect(single.checks.first { $0.code == "extension_duplicates" }?.status == .ok)
+
+        // PlugInKit could not be asked, which says nothing either way.
+        let unasked = Doctor.inspect(paths: paths, registration: .registered(bundlePath: installed))
+        #expect(unasked.checks.contains { $0.code == "extension_duplicates" } == false)
+    }
+
+    @Test func everyRegisteredCopyIsReadFromDuplicatesOutput() {
+        let output = "     app.eventra.MCPSafari.Extension(0.4.1)\t174B95E9\t2026-10-26 10:14:11 +0000"
+            + "\t/Applications/MCPSafari.app/Contents/PlugIns/MCPSafari Extension.appex\n"
+            + "     app.eventra.MCPSafari.Extension(0.4.1)\tC982AF9B\t2026-10-26 10:13:58 +0000"
+            + "\t/tmp/dd/Build/Products/Release/MCPSafari.app/Contents/PlugIns/MCPSafari Extension.appex\n"
+            + " (2 plug-ins)\n"
+
+        #expect(Doctor.parseExtensionPaths(from: output) == [
+            "/Applications/MCPSafari.app/Contents/PlugIns/MCPSafari Extension.appex",
+            "/tmp/dd/Build/Products/Release/MCPSafari.app/Contents/PlugIns/MCPSafari Extension.appex",
+        ])
+        #expect(Doctor.parseExtensionPaths(from: " (0 plug-ins)\n").isEmpty)
+    }
+
     private func writeBundle(
         at url: URL,
         identifier: String,

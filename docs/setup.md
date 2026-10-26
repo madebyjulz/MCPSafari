@@ -181,7 +181,7 @@ mcp-safari doctor
 mcp-safari doctor --json
 ```
 
-The doctor checks the server executable, app and extension bundles, PlugInKit registration, matching versions, and the selected port's token file. It never returns token contents and does not change system state.
+The doctor checks the server executable, app and extension bundles, PlugInKit registration, that only one copy of the extension is registered, matching versions, and the selected port's token file. It never returns token contents and does not change system state.
 
 ## Troubleshooting
 
@@ -191,6 +191,10 @@ The doctor checks the server executable, app and extension bundles, PlugInKit re
 2. Check your MCP client logs to confirm it started the server.
 3. Enable the extension in Safari settings, then click "Reconnect" in its popup.
 4. Start the server through your client with `--verbose` to see connection logs.
+
+### MCPSafari Extension appears twice in Safari's settings
+
+Safari is running two copies, and both connect to the server, so calls can reach either. The second is usually a build from Xcode or `xcodebuild`, which registers every app it builds. `mcp-safari doctor` names each copy under `extension_duplicates`. Unregister every copy outside `/Applications/MCPSafari.app` with `pluginkit -r "<path>"` and delete that build, or, in a source checkout, reinstall with `pnpm app:install`, which does both. See [one copy of the extension](development.md#one-copy-of-the-extension-or-bugs).
 
 ### "Could not establish connection" errors
 

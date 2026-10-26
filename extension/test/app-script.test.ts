@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import assert from "node:assert/strict";
+import { runInThisContext } from "node:vm";
 import { Option } from "effect";
 import { afterEach, beforeEach, test } from "vitest";
 import type { ControllerMessage } from "../src/app/contract.ts";
@@ -34,7 +35,7 @@ beforeEach(() => {
   document.body.className = "";
   document.body.innerHTML = /<body>([\s\S]*)<\/body>/.exec(appResource("Base.lproj/Main.html"))?.[1] ?? "";
   // The bundle exactly as the app's page loads it, against the app's own markup.
-  new Function(builtAppScript("Script.js"))();
+  runInThisContext(builtAppScript("Script.js"));
 });
 
 afterEach(() => {

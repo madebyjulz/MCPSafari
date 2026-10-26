@@ -72,7 +72,7 @@ pnpm check            # format, lint, typecheck, build the extension scripts, ru
 (cd MCPServer && swift build -c release)   # the server: MCPServer/.build/release/MCPSafari
 ```
 
-Then open `MCPSafari/MCPSafari.xcodeproj` in Xcode, choose your team under Signing & Capabilities for both targets, and run the `MCPSafari` scheme. Xcode builds the extension's TypeScript itself. Open the app once, enable **MCPSafari Extension** in Safari → Settings → Extensions (for an unsigned development build, first turn on Safari → Settings → Advanced → Show features for web developers, then Safari → Settings → Developer → Allow unsigned extensions), and point your client at the server binary by absolute path:
+Then open `MCPSafari/MCPSafari.xcodeproj` in Xcode, choose your team under Signing & Capabilities for both targets, and install with `pnpm app:install`, which builds the server and puts `MCPSafari.app` in `/Applications`. Use it rather than running the app from Xcode: every build Xcode makes registers another copy of the extension, Safari runs each copy that is enabled, and two copies on one server cause bugs (see [one copy of the extension](docs/development.md#one-copy-of-the-extension-or-bugs)). Enable **MCPSafari Extension** in Safari → Settings → Extensions (for an unsigned development build, first turn on Safari → Settings → Advanced → Show features for web developers, then Safari → Settings → Developer → Allow unsigned extensions), and point your client at the server binary by absolute path:
 
 ```sh
 claude mcp add --scope user mcp-safari "$PWD/MCPServer/.build/release/MCPSafari"
