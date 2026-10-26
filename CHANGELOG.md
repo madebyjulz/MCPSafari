@@ -1,6 +1,11 @@
 # Changelog
 
 ## [Unreleased]
+### Changed
+- The host app's page is written with Effect, like the extension's popup, in `extension/src/app/`. What Swift hands its `show` and `showPreferencesError` globals is decoded with schemas rather than trusted, so a value Swift was never meant to send shows as "Can't tell" instead of as either state, and the messages the page posts to `ViewController.swift` are one typed list.
+
+### Fixed
+- The host app's "Safari Settings…" button says so when Safari refuses to open its extension settings, which happens while a development build is registered in place of the installed one. The refusal used to be discarded, so the button looked dead. Safari's reason is shown as text, and the note still says where to go when Safari gives none.
 
 ## [0.4.0] - 2026-10-09
 ### Added

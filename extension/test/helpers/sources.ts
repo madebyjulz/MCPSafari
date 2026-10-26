@@ -9,6 +9,8 @@ const DIST_APP = resolve(import.meta.dirname, "../../dist/app");
 
 const RESOURCES = resolve(import.meta.dirname, "../../../MCPSafari/MCPSafari Extension/Resources");
 
+const APP_RESOURCES = resolve(import.meta.dirname, "../../../MCPSafari/MCPSafari/Resources");
+
 /** A bundled extension script exactly as Safari loads it. Run `pnpm exec tsdown` first; `pnpm test` does. */
 export const builtScript = (file: string): string => readFileSync(resolve(DIST_EXTENSION, file), "utf8");
 
@@ -17,3 +19,6 @@ export const builtAppScript = (file: string): string => readFileSync(resolve(DIS
 
 /** A static file shipped with the extension (manifest, popup markup). */
 export const extensionResource = (file: string): string => readFileSync(resolve(RESOURCES, file), "utf8");
+
+/** A static file shipped with the host app (its page's markup). */
+export const appResource = (file: string): string => readFileSync(resolve(APP_RESOURCES, file), "utf8");

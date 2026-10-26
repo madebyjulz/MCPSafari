@@ -79,6 +79,7 @@ The extension's code runs in three places, and what each may depend on differs:
   - `Connections.ts` — the WebSocket clients: tokens, handshake, reconnecting, the keepalive
   - `Popup.ts` — answering the popup
 - **The popup** (`src/popup/`) also uses Effect, and shares its message schemas with the background through `src/shared/popup.ts`.
+- **The host app's page** (`src/app/`), bundled as `Script.js` for `Main.html`, uses Effect too. `ViewController.swift` calls its `show` and `showPreferencesError` globals by name, and the page decodes what they are handed with the schemas in `contract.ts`, which also names the messages it posts back to Swift. Swift is not checked against those at compile time, so a name changed on one side has to be changed on the other by hand.
 - **Page-injected code** carries no dependencies at all, Effect included: it is parsed into every page and frame Safari opens. The build fails if a dependency is bundled into it.
   - `src/content/` — the content script, one bundle injected into every frame's isolated world: `core.ts` (element uids, tool errors, the bridge to the page world), `snapshot.ts`, `target.ts`, `input.ts`, `gesture.ts`, `io.ts`, and `main.ts`, which routes each action and guards against a second injection
   - `src/page/` — five scripts in the page's own world, injected before page scripts run: the trace, dialog, console and network interceptors, and `file-drop.ts`
@@ -86,7 +87,7 @@ The extension's code runs in three places, and what each may depend on differs:
 
 ### macOS host app
 
-A minimal macOS app (`AppDelegate.swift`, `ViewController.swift`) that registers the Safari extension and provides native messaging for auth token exchange.
+A minimal macOS app (`AppDelegate.swift`, `ViewController.swift`) that registers the Safari extension and provides native messaging for auth token exchange. Its window is `Main.html`, whose script is built from `extension/src/app/`.
 
 ### Repository scripts (`scripts/`)
 

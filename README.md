@@ -2,7 +2,7 @@
 
 A native Safari MCP server for your real, logged-in Safari on macOS. Works with any MCP-compatible client, including Claude Code, Codex, Cursor, OpenCode, and oh-my-pi.
 
-> **This is a fork** of [Epistates/MCPSafari](https://github.com/Epistates/MCPSafari). The Safari extension is rewritten in TypeScript, with its background page and popup on [Effect](https://effect.website) 4, and several extension bugs are fixed; the [changelog](CHANGELOG.md) lists both. The Swift server is unchanged. The fork publishes no releases of its own: Homebrew and the release downloads below install upstream's build, so to run this fork, [build it from source](#build-from-source).
+> **This is a fork** of [Epistates/MCPSafari](https://github.com/Epistates/MCPSafari). The Safari extension is rewritten in TypeScript, with its background page, popup and the host app's page on [Effect](https://effect.website) 4, and several extension bugs are fixed; the [changelog](CHANGELOG.md) lists both. The Swift server is unchanged. The fork publishes no releases of its own: Homebrew and the release downloads below install upstream's build, so to run this fork, [build it from source](#build-from-source).
 
 <div align="center">
   <video src="https://github.com/user-attachments/assets/96566f48-a7b7-468b-bf96-8ca5c5c86da7" muted autoplay loop playsinline width="100%"></video>

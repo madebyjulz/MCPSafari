@@ -14,10 +14,10 @@
 import { defineConfig, type UserConfig } from "tsdown";
 
 /**
- * Scripts that run on the extension's own pages (the background and the
- * popup). Only these may bundle Effect.
+ * Scripts that run on pages the extension or the app own: the background, the
+ * popup, and the host app's page. Only these may bundle Effect.
  */
-const EXTENSION_PAGE_SCRIPTS: ReadonlySet<string> = new Set(["background.js", "popup.js"]);
+const OWN_PAGE_SCRIPTS: ReadonlySet<string> = new Set(["background.js", "popup.js", "Script.js"]);
 
 /** Output file name -> entry point. The names are the contract with manifest.json. */
 export const EXTENSION_ENTRIES = {
@@ -59,7 +59,7 @@ const script = (output: string, entry: string, outDir: string): UserConfig => ({
   // `pnpm build` empties dist/ once before building them all.
   clean: false,
   logLevel: "warn",
-  deps: EXTENSION_PAGE_SCRIPTS.has(output)
+  deps: OWN_PAGE_SCRIPTS.has(output)
     ? // Bundled whole: an IIFE cannot import anything at run time.
       { alwaysBundle: ["effect"], onlyBundle: ["effect"] }
     : // Content and page-world scripts are injected into every page and frame,

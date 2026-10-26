@@ -2,46 +2,57 @@
 // `show(...)` and `showPreferencesError(...)` by name through
 // `evaluateJavaScript`, so they have to stay globals.
 
+import { Effect, Option, Schema } from "effect";
+import { ExtensionState, PreferencesError, type ControllerMessage } from "./contract.ts";
+import { preferencesErrorText, stateClasses } from "./render.ts";
+
 declare global {
   interface Window {
-    show: typeof show;
-    showPreferencesError: typeof showPreferencesError;
+    show: (enabled: ExtensionState) => void;
+    showPreferencesError: (reason: string) => void;
   }
 }
 
-// `enabled` true or false is Safari's answer; null means Safari would not give
-// one, which is not the same as "not enabled" and must not be shown as it.
-function show(enabled: boolean | null): void {
-  document.body.classList.toggle(`state-on`, enabled === true);
-  document.body.classList.toggle(`state-off`, enabled === false);
-  document.body.classList.toggle(`state-error`, enabled === null);
-}
+// Swift builds these calls as script text, so the types above are what it is
+// meant to send, not what it is held to.
+const decodeExtensionState = Schema.decodeUnknownOption(ExtensionState);
 
-function openPreferences(): void {
-  webkit.messageHandlers.controller.postMessage("open-preferences");
-}
+const decodePreferencesError = Schema.decodeUnknownOption(PreferencesError);
 
-// Safari can refuse to open its own settings pane, in which case nothing
-// happens on screen and the button reads as broken. Say so instead.
-function showPreferencesError(message: string): void {
-  const note = document.querySelector<HTMLElement>(".preferences-note");
+const element = (selector: string): HTMLElement => {
+  const found = document.querySelector<HTMLElement>(selector);
 
-  if (note === null) return;
+  if (!found) throw new Error(`Main.html has no ${selector}`);
 
-  note.textContent = `Safari would not open its settings: ${message} Open Safari > Settings > Extensions yourself.`;
-  note.hidden = false;
-}
+  return found;
+};
 
-function enableNativeInput(): void {
-  webkit.messageHandlers.controller.postMessage("enable-native-input");
-}
+const post = (message: ControllerMessage) => Effect.sync(() => webkit.messageHandlers.controller.postMessage(message));
 
-window.show = show;
+const showState = (enabled: ExtensionState) =>
+  Effect.sync(() => {
+    for (const [name, on] of Object.entries(stateClasses(enabled))) document.body.classList.toggle(name, on);
+  });
 
-window.showPreferencesError = showPreferencesError;
+const showPreferencesError = (reason: Option.Option<string>) =>
+  Effect.sync(() => {
+    const note = element(".preferences-note");
 
-document.querySelector("button.open-preferences")?.addEventListener("click", openPreferences);
+    note.textContent = preferencesErrorText(reason);
+    note.hidden = false;
+  });
 
-document.querySelector("button.enable-native-input")?.addEventListener("click", enableNativeInput);
+/** Wires the buttons, and the globals Swift calls. */
+const page = Effect.sync(() => {
+  // A value Swift was never meant to send is not an answer either, so it
+  // shows as "can't tell" rather than as either state.
+  window.show = (enabled) => Effect.runSync(showState(Option.getOrNull(decodeExtensionState(enabled))));
 
-export {};
+  window.showPreferencesError = (reason) => Effect.runSync(showPreferencesError(decodePreferencesError(reason)));
+
+  element("button.open-preferences").addEventListener("click", () => Effect.runSync(post("open-preferences")));
+
+  element("button.enable-native-input").addEventListener("click", () => Effect.runSync(post("enable-native-input")));
+});
+
+Effect.runSync(page);
