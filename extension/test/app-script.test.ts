@@ -7,6 +7,7 @@ const appHarness = () => {
   const classes = new Set<string>();
   const messages: Array<string> = [];
   const listeners = new Map<string, () => void>();
+  const note = { hidden: true, textContent: "" };
   const window: Record<string, unknown> = {};
 
   const context = vm.createContext({
@@ -17,9 +18,13 @@ const appHarness = () => {
           toggle: (name: string, enabled: boolean) => (enabled ? classes.add(name) : classes.delete(name)),
         },
       },
-      querySelector: (selector: string) => ({
-        addEventListener: (event: string, listener: () => void) => listeners.set(`${selector}:${event}`, listener),
-      }),
+      querySelector: (selector: string) =>
+        selector === ".preferences-note"
+          ? note
+          : {
+              addEventListener: (event: string, listener: () => void) =>
+                listeners.set(`${selector}:${event}`, listener),
+            },
     },
     webkit: {
       messageHandlers: {
@@ -32,7 +37,7 @@ const appHarness = () => {
 
   vm.runInContext(builtAppScript("Script.js"), context);
 
-  return { classes, listeners, messages, window };
+  return { classes, listeners, messages, note, window };
 };
 
 test("Accessibility button opens settings guidance", () => {
@@ -61,4 +66,17 @@ test("Swift can still call show by name, and an unknown state is not shown as of
   (show as (enabled: boolean | null) => void)(null);
 
   assert.deepEqual([...classes], ["state-error"]);
+});
+
+test("Swift can report that Safari refused to open its settings", () => {
+  const { note, window } = appHarness();
+  const showPreferencesError = window["showPreferencesError"];
+
+  assert.equal(typeof showPreferencesError, "function");
+
+  // SAFETY: just checked to be a function; this is the global ViewController.swift calls.
+  (showPreferencesError as (message: string) => void)("The extension could not be found.");
+
+  assert.equal(note.hidden, false);
+  assert.match(note.textContent, /The extension could not be found\./);
 });
