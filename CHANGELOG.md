@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+
+## [0.4.1] - 2026-10-26
 ### Changed
 - The host app's page is written with Effect, like the extension's popup, in `extension/src/app/`. What Swift hands its `show` and `showPreferencesError` globals is decoded with schemas rather than trusted, so a value Swift was never meant to send shows as "Can't tell" instead of as either state, and the messages the page posts to `ViewController.swift` are one typed list.
 
