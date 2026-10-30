@@ -50,8 +50,17 @@ interface SnapshotNode {
   children?: Array<JsonValue>;
   frameSrc?: string;
   unmatchedFrames?: number;
-  unreachableFrames?: Array<{ readonly frameId: number; readonly origin: string | null }>;
+  unreachableFrames?: Array<UnreachableFrame>;
 }
+
+/**
+ * A frame a snapshot could not read. A frame list that could not be read at all
+ * is one entry with no id or origin, because the caller's question is the same:
+ * is this tree the whole page?
+ */
+type UnreachableFrame =
+  | { readonly frameId: number; readonly origin: string | null }
+  | { readonly frameId: null; readonly origin: null; readonly reason: "frame_enumeration_failed" };
 
 const isSnapshotNode = (value: unknown): value is SnapshotNode => Predicate.isObject(value) && !Array.isArray(value);
 
@@ -126,6 +135,10 @@ export class ContentScripts extends Context.Service<
       // A missing (or 0) `tabId` means the tab a call that names none acts on.
       const resolveTab = (tabId: number | undefined) => (tabId ? Effect.succeed(tabId) : selectedTab.activeTabId);
 
+      // The top frame is still worth reading when the page's frames cannot be
+      // listed, so the call degrades to it. `enumerated` is what keeps that from
+      // being silent: a caller that builds a whole-page answer has to say it only
+      // saw the top frame, the same way it says so for a frame that will not answer.
       const listFrames = Effect.fn("ContentScripts.listFrames")(function* (tabId: number) {
         const frames = yield* callBrowser((api) => api.webNavigation.getAllFrames({ tabId })).pipe(
           Effect.tapError((error) => Effect.logWarning("[MCPSafari] Frame enumeration failed:", error.message)),
@@ -134,14 +147,17 @@ export class ContentScripts extends Context.Service<
         );
 
         if (frames && frames.length > 0) {
-          return frames.map((frame): FrameInfo => ({
-            frameId: frame.frameId,
-            parentFrameId: frame.parentFrameId,
-            url: frame.url,
-          }));
+          return {
+            frames: frames.map((frame): FrameInfo => ({
+              frameId: frame.frameId,
+              parentFrameId: frame.parentFrameId,
+              url: frame.url,
+            })),
+            enumerated: true,
+          };
         }
 
-        return [{ frameId: 0, parentFrameId: -1, url: "" }];
+        return { frames: [{ frameId: 0, parentFrameId: -1, url: "" }], enumerated: false };
       });
 
       const injectContentScripts = Effect.fn("ContentScripts.inject")(function* (tabId: number) {
@@ -215,7 +231,7 @@ export class ContentScripts extends Context.Service<
         tabId: number,
         message: ContentMessage,
       ) {
-        const frames = yield* listFrames(tabId);
+        const { frames } = yield* listFrames(tabId);
         const collected: Array<{ readonly frameId: number; readonly data: JsonValue | undefined }> = [];
 
         for (const frame of frames) {
@@ -266,7 +282,7 @@ export class ContentScripts extends Context.Service<
         tabId: number,
         message: ContentMessage,
       ) {
-        const frames = yield* listFrames(tabId);
+        const { frames } = yield* listFrames(tabId);
 
         // Asked of every frame at once rather than in turn. A `wait` whose selector
         // never appears costs its entire timeout in each frame otherwise, so a page
@@ -301,9 +317,11 @@ export class ContentScripts extends Context.Service<
         tabId: number,
         params: ContentParams,
       ) {
-        const frames = yield* listFrames(tabId);
+        const { frames, enumerated } = yield* listFrames(tabId);
         const trees = new Map<number, SnapshotNode>();
-        const unreachable: Array<{ readonly frameId: number; readonly origin: string | null }> = [];
+        const unreachable: Array<UnreachableFrame> = [];
+
+        if (!enumerated) unreachable.push({ frameId: null, origin: null, reason: "frame_enumeration_failed" });
 
         for (const frame of frames) {
           const outcome = yield* Effect.result(send(tabId, { action: "snapshot", params }, frame.frameId));

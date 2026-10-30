@@ -20,6 +20,12 @@ on:
 permissions:
   contents: read
 
+# A newer push to a pull request makes the earlier run moot. Pushes to main are
+# never cancelled, so every commit on main keeps its own result.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
     name: Build & Test
@@ -28,7 +34,9 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Select Xcode 26.6
         run: |
@@ -48,6 +56,8 @@ jobs:
             exit 1
           }
 
+      # Pinned rather than taken from whatever the runner image ships, so a
+      # runner image update cannot change the Node the extension tests run on.
       - name: Set up pnpm
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
 
@@ -93,5 +103,16 @@ jobs:
             -scheme "MCPSafari" \
             -configuration Debug \
             build \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO
+
+      # The extension's token reader is the only path a token takes to Safari,
+      # and every way it can fail is silent, so its unit tests run here too.
+      - name: Test Safari Extension token reader
+        run: |
+          cd MCPSafari
+          xcodebuild test -project MCPSafari.xcodeproj \
+            -scheme "MCPSafari" \
+            -destination 'platform=macOS' \
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO

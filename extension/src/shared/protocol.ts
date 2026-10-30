@@ -40,6 +40,8 @@ export const TOOL_ERROR_CODES = [
   "native_input_focus_failed",
   "input_not_applied",
   "wait_timeout",
+  "tab_closed",
+  "tab_not_showing",
 ] as const;
 
 export type ToolErrorCode = (typeof TOOL_ERROR_CODES)[number];
@@ -53,6 +55,7 @@ export const RECOVERY_ACTIONS = [
   "use_synthetic_input",
   "retry",
   "use_native_input",
+  "call_tabs_context",
 ] as const;
 
 export type RecoveryAction = (typeof RECOVERY_ACTIONS)[number];

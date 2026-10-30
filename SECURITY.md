@@ -48,6 +48,13 @@ downloaded file back to the workflow run and commit that produced it, which a ch
 Every workflow action is pinned by commit SHA, and dependency resolution is locked to
 `Package.resolved`.
 
+A release is built only from a commit that is on `main` and has passed the test suites and the
+dependency audit. Both products are built before the signing certificate is imported, so build-time
+code never runs with the key present. Each shipped archive is then unpacked and its signature,
+notarization ticket, team, hardened runtime and entitlements are checked again. The signing secrets
+sit in a protected `release` environment that needs a reviewer's approval; see
+[Repository settings](docs/development.md#repository-settings).
+
 ## Browser access and data
 
 MCPSafari runs locally, but your MCP client receives tool results and may send them to its model provider. The extension can read and act on sites where you grant it access, using your existing Safari session.
@@ -56,32 +63,71 @@ The details below describe `main`; installed releases may differ.
 
 ### WebSocket authentication
 
-The server generates a random UUID token at startup, writes it to `~/Library/Application Support/MCPSafari/tokens/<port>` (mode `0600`), and requires it as the first WebSocket message before any MCP tool traffic is sent. The extension reads the per-port token map via native messaging from the host app, so multiple server instances can authenticate independently. Connections without a valid token are closed.
+The server generates a random UUID token at startup and writes it to `~/Library/Application Support/MCPSafari/tokens/<port>` (mode `0600`). The extension reads the per-port token map via native messaging from the host app, so multiple server instances can authenticate independently. The token never crosses the WebSocket. Each side proves it holds the token by returning an HMAC-SHA256 over both sides' fresh nonces, keyed with the token, and the extension checks the server's proof before it sends its own:
+
+1. The extension sends `hello` with a random 32-byte `clientNonce`, its version, the bridge protocol version and its Safari profile id.
+2. The server answers with a `challenge`: a random 32-byte `serverNonce` and `serverProof`, the HMAC of `mcpsafari-v<N>-server|<port>|<clientNonce>|<serverNonce>`.
+3. The extension verifies `serverProof` with WebCrypto, which compares in constant time. If it does not verify, the extension closes the connection, sends nothing further, and acts on no frame from that peer.
+4. Otherwise it sends `clientProof`, the HMAC of `mcpsafari-v<N>-client|<port>|<serverNonce>|<clientNonce>`.
+5. The server checks `clientProof` in constant time and answers `auth: ok`, or `auth: error` with `token_mismatch` and closes.
+
+The two proofs carry different labels and take the nonces in opposite orders, so neither can be reflected back as the other. Each includes the port and fresh nonces from both sides, so a captured exchange cannot be replayed on another connection or against another server. Any frame other than the expected next step closes the connection, and the mid-handshake slot cap and deadline below cover the whole exchange, not just the first frame. A peer that merely listens on a port, or one that dials the extension, learns nothing from the exchange that lets it impersonate either side: before this protocol, the extension sent the token in its first frame and treated any `auth: ok` as proof of the server, so a process that had taken a port the extension was configured for received the token and could then be driven as if it were the server. That cannot happen now.
+
+The proofs authenticate the handshake, not the stream that follows: later frames are neither signed nor encrypted. The listener is loopback-only, and a process that can sit between the two ends of a loopback connection is a process running as the user or as root, which the threat model above treats as out of scope.
+
+Bridge protocol 2 does not interoperate with 0.3.x: a 0.3.x extension is told to update, and its token, which it sends in the clear, is only compared. A 0.4 extension dialling a 0.3.x server is closed without a message, because that server cannot parse the new hello. Install matching app and `mcp-safari` versions together.
+
+The extension is sandboxed, and its only file grant is read access to that `tokens/` directory. It passes a file on to the background script only if the file is a regular file of at most 256 bytes holding a UUID, opened without following a symlink, and only if its name is a canonical port number. Anything else in the directory is skipped. The host app holds no file grants at all. An unknown native message gets a fixed error rather than an echo, and a missing token is reported as a code with no paths in it.
+
+The token file is removed when the server stops, including on SIGTERM, SIGINT and SIGHUP. A server that is killed outright cannot remove it, so each token file has a `<port>.pid` file beside it naming the owning process, and a starting server deletes the token files whose recorded owner is no longer running. A token with no owner record is left alone, since nothing proves its server is gone.
 
 The listener binds to the loopback address, so only processes on this machine can reach it, and a connection is never given MCP traffic before its handshake succeeds.
 
-The server does not check the WebSocket `Origin` header. A page in any browser can open a connection to a loopback port and learn that something is listening there, which is a fingerprinting surface. It cannot authenticate, because the token is a random UUID in a `0600` file it has no way to read. At most eight connections may wait mid-handshake and a ninth evicts the oldest, so a flood of them cannot hold the bridge shut against a real Safari profile.
+The server refuses a WebSocket upgrade whose `Origin` header is present and is not a `safari-web-extension://` one. Browsers do not apply same-origin to WebSockets, so a page in any browser can open a connection to a loopback port, and Safari sends `Origin: safari-web-extension://<per-profile UUID>` for the extension, as measured on a real run. The host part is a UUID that changes when the extension is reinstalled, so only the scheme is checked. A request with no `Origin` is admitted, since that is a client with no browser behind it, such as a test harness. A refused page is told so at the upgrade and holds no handshake slot afterwards. This is not what authenticates: a page that could somehow present the right origin still cannot complete the handshake without the token, which is a random UUID in a `0600` file it has no way to read, and a page can still learn that something is listening on a port by the refusal, which is a fingerprinting surface. At most eight connections may wait mid-handshake and a ninth is refused, so a flood of them cannot evict a real Safari profile that is partway through its handshake. A connection that has not authenticated within two seconds is closed, which frees its slot; the extension sends its handshake within milliseconds of opening. The first frame of an unauthenticated connection is also capped at 4 KiB and is closed without being decoded if it is larger. The listener's own message limit is far higher because tool responses need it, and it cannot differ per connection.
 
-The token is also written to the previous location, `~/.config/mcp-safari/tokens/<port>`, so an extension build predating the move keeps authenticating. Application Support is preferred because the Safari extension is sandboxed: its read access is granted on a literal home-relative path, which the sandbox checks against the *resolved* path. A `~/.config` symlinked into a dotfiles repo therefore puts the token outside the granted path, and the extension silently never connects. `mcp-safari doctor` reports this as a `token_path` warning.
+Tokens are written only under `~/Library/Application Support/MCPSafari/`. Earlier releases also wrote `~/.config/mcp-safari/tokens/<port>` and a single shared `token` file, so that extension builds predating per-port tokens could still authenticate. Both are gone: those builds cannot speak the current bridge protocol, and a second copy of the secret in a shared, replaceable file was a cost without a user. Application Support is used because the Safari extension is sandboxed: its read access is granted on a literal home-relative path, which the sandbox checks against the *resolved* path. A directory under `~/.config` that is symlinked into a dotfiles repo puts the token outside the granted path, and the extension silently never connects. `mcp-safari doctor` reports a symlinked token directory as a `token_path` warning.
 
 ### Input validation
 
-- URL schemes restricted to `http`, `https`, `about`, and `file`
+- URL schemes restricted to `http`, `https`, `about`, and `file`, judged after the normalization the browser applies (leading and trailing control characters and spaces dropped, tabs and newlines removed), and the normalized URL is what is sent
 - Navigation actions validated against an allowlist
-- Regex patterns capped at 200 characters and validated before forwarding
+- Optional arguments of the wrong type rejected with `invalid_input`, never read as absent, so a mistyped filter cannot return unfiltered data and a mistyped flag cannot fall back to its default
+- Regex patterns held to the bounded subset (at most 200 UTF-16 code units, no repetition, groups, or backreferences) and validated by the server before forwarding, so the check does not depend on the page-world filter, which a page can rewrite
 - Wait durations capped at 300 seconds
 - File reads limited to explicit caller-provided paths, with directories rejected and 10 files / 10 MB capped per call
+- `upload_file` and `drop_file` refuse any file inside the bridge token directories (`~/Library/Application Support/MCPSafari/` and `~/.config/mcp-safari/`). The check is made on the open descriptor's resolved path, so symlinks, including a symlinked `~/.config`, and different spellings of the same path do not get around it. `navigate` and `tabs_create` apply the same rule to `file:` URLs after resolving symlinks, so Safari cannot be pointed at the token and `read_page` cannot return it
+- `screenshot` `filePath` must end in `.png`; an existing target must be a regular file that already begins with the PNG signature (symlinks and other files are refused, so it cannot overwrite `~/.zshrc` or a key), the token directories are refused, new files are created `0600`, and the write is a rename of a finished temporary file
 - `find` returns at most 50 matches per call
+- `maxChars`, `maxNodes` and `maxResults` clamped to documented maxima, so a caller cannot ask for unbounded output
 
 ### Snapshot redaction
 
-`snapshot` reports that a sensitive field has a value without reporting the value itself. Password inputs, and inputs whose `autocomplete` marks them as a password, one-time code, or payment card field, come back as `"value": "[redacted]"`. Other field values are reported verbatim. This redaction does not cover every place a page may display a secret, or other outputs such as screenshots, HTML, and JavaScript results.
+`snapshot` reports that a sensitive field has a value without reporting the value itself. An `<input>` or `<textarea>` comes back as `"value": "[redacted]"` when any of these holds:
+
+- Its type is `password`, in any letter case.
+- Its `autocomplete` carries `current-password`, `new-password`, `one-time-code`, `cc-number`, `cc-csc`, `cc-exp`, `cc-exp-month`, or `cc-exp-year`, alone or among other tokens such as `section-x cc-csc`.
+- It was a password field at any point while the page has been open. A show-password toggle flips the field to `type="text"`, so the extension watches `type` changes from page load and remembers the field.
+- Its `name`, `id`, `aria-label`, `inputmode`, or `autocomplete` names a secret: a word such as `pass`, `pwd`, `pin`, `otp`, `cvv`, `cvc`, `ssn`, `secret`, `token`, or `2fa`, or a longer run containing `password`, `passcode`, `secret`, `token`, or `one-time`. Whole words are matched for the short ones, so `shipping` and `passenger` stay readable. Checkboxes, radio buttons, and buttons are exempt from this name test because their value is a fixed label rather than something typed.
+
+A sensitive `<textarea>` also loses its default text from the snapshot, which would otherwise repeat what the value redaction withholds.
+
+The name test is a heuristic, so a secret under a name nobody has thought of is reported verbatim, and a field that was toggled out of password type inside a shadow root before the first snapshot reached that root is caught only by its name. Other field values are reported verbatim. This redaction does not cover every place a page may display a secret, or other outputs such as screenshots, HTML, and JavaScript results.
+
+### Tabs on sites you have not granted
+
+Safari's tabs API returns a URL and title for every open tab, including tabs on sites you never granted the extension, and the `tabs` permission is what allows that. `tabs_context`, `tabs_create`, `select_tab`, and `navigate` therefore describe a tab (its URL and its title) only when its site is known to be granted. The tab otherwise stays in the listing with its handle, window, and state and reports `"access": "not_granted"`, so an agent can still address it and is told what to ask you for.
+
+"Known" means a call has already run on a page of that site. It is not read from `permissions.contains`, which on Safari answers for what the manifest requests rather than what you granted, and it is not probed, because probing a site Safari has not decided on raises its permission dialog. Once a tool call has succeeded on a site, that is remembered across Safari restarts, in the extension's local storage, as a list of origins capped at 500 (the one confirmed longest ago is dropped first). An origin is forgotten the moment a call to it is refused. The consequences are that a site you granted but nothing has touched yet reads as `not_granted` until something does, and that a site you revoke in Safari Settings keeps showing its URL and title in `tabs_context` until the next call to it is refused. The extension still receives the URL and title from Safari. This controls what it reports, and what Safari discloses to the extension is Safari's to decide.
 
 ### Tab URL redaction
 
-A tab's URL is reported by `tabs_context`, `tabs_create`, `select_tab`, and `navigate`, and an OAuth callback or a presigned download carries its credential in the query or fragment. Those values come back as `[redacted]`: bearer and session parameters by name (`token`, `access_token`, `session`, `jwt`, `signature`, `X-Amz-Signature`, and the rest), plus `code` when `state` sits alongside it, since `code` on its own is more often a SKU than an OAuth code.
+A URL is reported by `tabs_context`, `tabs_create`, `select_tab`, and `navigate`, and also appears in `read_network` records, trace events, and the `href` of links in a `snapshot`. An OAuth callback or a presigned download carries its credential in the query or fragment, and a URL can carry one in its userinfo. All of those places use one redaction, applied in the extension before a result leaves it:
 
-Matching is on the whole parameter name, so a name that describes a secret rather than carrying one stays readable: `token_type=bearer` and `password_hint` are reported as they are. Two limits follow from that. The list is maintained by hand, so a credential under a name nobody has thought of is reported verbatim, and only the query and fragment are considered, so a secret in the path is not redacted.
+- A query or fragment value comes back as `[redacted]` when its parameter name contains a secret word: `token`, `secret`, `key`, `sig`, `signature`, `password`, `passwd`, `pwd`, `passcode`, `auth`, `authorization`, `session`, `sid`, `jwt`, `otp`, `ticket`, `verifier`, or `credential`. Names are split into words on separators and camelCase and percent-decoded first, so `auth_token`, `oauth_verifier`, `csrf_token`, `accessToken`, `X-Goog-Signature`, `#access-token=`, and `%74oken` are all covered. A name run together as one word is covered when it ends in `token`, `secret`, `password`, `signature`, `apikey`, or `sessionid`.
+- `code` is redacted when `state` sits alongside it, since `code` on its own is more often a SKU than an OAuth code.
+- Userinfo is replaced: `https://user:pw@host/` is reported as `https://[redacted]@host/`.
+
+A name whose last word only describes a secret stays readable, so `token_type=bearer`, `password_hint`, and `token_expires` are reported as they are, as is a name that merely contains a secret word as part of another, such as `design` or `monkey`. Two limits remain. The rule is a heuristic, so a credential under a name with none of those words is reported verbatim, and only the query, fragment, and userinfo are considered, so a secret in the path is not redacted. Page text, HTML, and console messages are not URL-redacted.
 
 ### Permissions
 
@@ -112,7 +158,13 @@ UTF-16 code units per field and reports truncation. Console and network capture
 still run on permitted pages without an MCP client.
 
 Page-world instrumentation is not a trusted audit log: a page can inspect, alter,
-or spoof the page-side APIs and messages. Treat page text and captured events as
+or spoof the page-side APIs and messages. Because a page can also answer the
+extension's requests itself, everything that comes back from the page world is
+checked again in the extension's isolated world before it is used: it must be
+plain data of the expected shape, lists are cut to 1,000 console messages, 500
+network records, or 1,001 trace events, each string to its documented cap, and the
+whole reply to a fixed total size, so a hostile page cannot inflate a result past
+the bridge's frame limit. Treat page text and captured events as
 untrusted data, including instructions embedded in them. Tool output may include
 signed-in content and is shared with the MCP client, whose model provider and
 retention policies are separate from this local extension.

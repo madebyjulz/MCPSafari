@@ -72,7 +72,11 @@ interface TreeNode {
   readonly tag?: string;
   readonly children?: ReadonlyArray<TreeNode>;
   readonly unmatchedFrames?: number;
-  readonly unreachableFrames?: ReadonlyArray<{ readonly frameId: number; readonly origin: string | null }>;
+  readonly unreachableFrames?: ReadonlyArray<{
+    readonly frameId: number | null;
+    readonly origin: string | null;
+    readonly reason?: string;
+  }>;
 }
 
 const iframeOf = (tree: TreeNode): TreeNode | undefined => tree.children?.find((child) => child.tag === "iframe");
@@ -186,6 +190,34 @@ test("a frame with an unreadable url is still reported", async () => {
   assert.equal(tree.unreachableFrames?.length, 1);
   assert.equal(tree.unreachableFrames[0]?.frameId, 7);
   assert.equal(tree.unreachableFrames[0]?.origin, null);
+});
+
+test("a frame list that cannot be read is reported rather than collapsing to the top frame silently", async () => {
+  const { api, request, sent } = loadBackground(() => ok(topTree()));
+
+  api.webNavigation.getAllFrames = async () => {
+    throw new Error("webNavigation unavailable");
+  };
+
+  const tree: TreeNode = dataOf(await request("snapshot", { tabId: 1 }));
+
+  // The top frame is still read, so the caller gets something useful...
+  assert.deepEqual(
+    sent.map((message) => message.frameId),
+    [0],
+  );
+  assert.equal(tree.children?.[0]?.uid, "f0e6");
+  // ...but a tree that looks whole while any iframe is missing is the
+  // failure the unreachable list exists for.
+  assert.deepEqual(tree.unreachableFrames, [{ frameId: null, origin: null, reason: "frame_enumeration_failed" }]);
+});
+
+test("an empty frame list is treated as a failed enumeration", async () => {
+  const { request } = loadBackground(() => ok(topTree()), []);
+
+  const tree: TreeNode = dataOf(await request("snapshot", { tabId: 1 }));
+
+  assert.equal(tree.unreachableFrames?.[0]?.reason, "frame_enumeration_failed");
 });
 
 test("find fans out and returns matches from every frame", async () => {

@@ -59,9 +59,10 @@ interface LoadOptions {
   readonly target?: FakeElement;
   readonly toTarget?: FakeElement;
   readonly window?: Partial<WindowGeometry>;
+  readonly hasFocus?: boolean;
 }
 
-function loadContent({ target, toTarget, window: windowValues }: LoadOptions = {}): CallContent {
+function loadContent({ target, toTarget, window: windowValues, hasFocus = true }: LoadOptions = {}): CallContent {
   let listener: RuntimeListener | undefined;
 
   vm.runInNewContext(source, {
@@ -72,6 +73,7 @@ function loadContent({ target, toTarget, window: windowValues }: LoadOptions = {
       body: null,
       documentElement: null,
       activeElement: null,
+      hasFocus: () => hasFocus,
       querySelector: (selector: string) => {
         if (selector === "#to") return toTarget || null;
 
@@ -206,4 +208,19 @@ test("x/y overrides a resolvable selector, matching the synthetic path", async (
   assert.deepEqual(JSON.parse(JSON.stringify(data)), {
     from: { x: 100 + 400, y: 125 + 100 + 300 },
   });
+});
+
+// The points are screen coordinates. If Safari is not the window in front, they
+// land on whatever is, in another application.
+test("native_pointer_points refuses when the page does not hold focus", async () => {
+  const target = el({ left: 50, top: 60, width: 20, height: 10 });
+  const call = loadContent({ target, hasFocus: false });
+
+  const response = await call("native_pointer_points", { selector: "#target" });
+
+  assert.equal(response.data, null);
+  assert.equal(response.errorCode, "native_input_focus_failed");
+  assert.equal(response.retryable, true);
+  assert.equal(response.recoveryAction, "retry");
+  assert.match(response.error ?? "", /native mouse events/);
 });

@@ -30,6 +30,7 @@ export const TEST_TIMING: BackgroundTiming = {
   navigationTimeout: Duration.millis(400),
   noNavigationTimeout: Duration.millis(40),
   sameDocumentSettle: Duration.millis(20),
+  navigationStartWindow: Duration.millis(40),
   nativeFocusSettle: Duration.zero,
   screenshotActivateSettle: Duration.zero,
   injectionSettle: Duration.zero,

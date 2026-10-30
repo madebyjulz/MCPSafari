@@ -87,6 +87,17 @@ export function releaseNotes(tag: string, root: string = ROOT): string {
     throw new ValueError(`Tag ${tag} does not match all product versions: ${repr(sortedUnique(versions))}`);
   }
 
+  // The build number is not tied to the tag, but a bump that lands in one
+  // target's settings and not the others would ship the app and its embedded
+  // extension (or the test bundle) with different CFBundleVersions.
+  const builds = Array.from(project.matchAll(/CURRENT_PROJECT_VERSION = ([^;]+);/g), (match) => match[1] ?? "");
+
+  if (builds.length === 0) throw new ValueError("Could not locate the app build number");
+
+  if (new Set(builds).size !== 1) {
+    throw new ValueError(`CURRENT_PROJECT_VERSION differs between targets: ${repr(sortedUnique(builds))}`);
+  }
+
   const changelog = readText(join(root, "CHANGELOG.md"));
   const entries = Array.from(changelog.matchAll(CHANGELOG_ENTRY));
   const matching = entries.flatMap((entry, index) => (entry[1] === version ? [index] : []));

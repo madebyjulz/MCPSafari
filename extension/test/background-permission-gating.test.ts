@@ -233,10 +233,18 @@ test("a pinned tab parked on the dialog is not mistaken for a closed one", async
   assert.equal(await harness.harness.run(SelectedTab.use((selected) => selected.get)), 7);
 });
 
-test("select_tab parked on the dialog names the reason", async () => {
+test("select_tab on a tab parked on the dialog still pins it, and the next page call names the reason", async () => {
+  // Pinning is bookkeeping and needs no access to the page, so a tab the user
+  // has yet to grant can be chosen. What it cannot do is be read.
   const harness = loadBackground({ probe: parked });
 
-  const response = await harness.request("select_tab", { tabId: 1 });
+  const selected = await harness.request("select_tab", { tabId: 1 });
+
+  assert.equal(selected.success, true, selected.error ?? "");
+  assert.equal(JSON.parse(selected.data ?? "{}").access, "not_granted");
+  assert.equal(await harness.harness.run(SelectedTab.use((tab) => tab.get)), 1);
+
+  const response = await harness.request("read_page");
 
   assert.equal(response.errorCode, "permission_required");
   assert.match(response.error ?? "", /https:\/\/blocked\.example/);

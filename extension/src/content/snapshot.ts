@@ -4,6 +4,7 @@
  */
 
 import type { ContentParams } from "../shared/protocol.ts";
+import { isSensitiveField } from "../shared/sensitive-field.ts";
 import { asPageElement, escapeCssString, getUid, type PageElement } from "./core.ts";
 
 export interface SnapshotParams extends ContentParams {
@@ -168,6 +169,13 @@ const MAX_TREE_DEPTH = 30;
 
 const MAX_SNAPSHOT_NODES = 2000;
 
+// One cap for the strings a node carries, its text and its name alike.
+const MAX_TEXT_CHARS = 500;
+
+function truncateText(text: string): string {
+  return text.length <= MAX_TEXT_CHARS ? text : `${text.substring(0, MAX_TEXT_CHARS - 3)}...`;
+}
+
 /** How many more nodes a snapshot may report, and whether it ran out. */
 interface SnapshotBudget {
   remaining: number;
@@ -176,6 +184,9 @@ interface SnapshotBudget {
 
 export function takeSnapshot(params: SnapshotParams = {}): SnapshotNode | null {
   const root = document.body || document.documentElement;
+
+  for (const queryRoot of allRoots()) watchForPasswordFields(queryRoot);
+
   const requested = Number(params.maxNodes);
   const budget = { remaining: requested > 0 ? requested : MAX_SNAPSHOT_NODES, cut: false };
   const tree = buildTree(root, 0, budget);
@@ -206,8 +217,6 @@ function buildTree(element: PageElement, depth: number, budget: SnapshotBudget):
   const tag = element.tagName ? element.tagName.toLowerCase() : "";
 
   const node: SnapshotNode = { uid, tag, role };
-
-  if (name) node.name = name;
 
   // Value for inputs. Secrets report their presence, not their contents,
   // so a snapshot of a filled login or payment form is safe to hand to a model.
@@ -255,18 +264,27 @@ function buildTree(element: PageElement, depth: number, budget: SnapshotBudget):
 
   // Leaf nodes report their whole text content. Nodes that also have
   // element children report their own direct text nodes, so mixed
-  // content such as <button><span>9</span>All</button> keeps "All".
+  // content such as <button><span>9</span>All</button> keeps "All". That is
+  // only the element's own words: the children carry the rest, and for a
+  // link, button or heading the whole label in reading order is `name`.
   const rawText = children.length === 0 ? renderedText(renderedTextRoot(element)) : ownTextContent(element);
 
-  if (rawText) {
-    const text = rawText.trim();
+  // A textarea's text content is its default value, so a sensitive one would
+  // otherwise leak here what the `value` redaction above withheld.
+  let text = "";
 
-    if (text && text.length <= 500) {
-      node.text = text;
-    } else if (text) {
-      node.text = text.substring(0, 497) + "...";
-    }
+  if (rawText && !(tag === "textarea" && isSensitiveInput(element))) {
+    text = rawText.trim();
+
+    if (text) node.text = truncateText(text);
   }
+
+  // A name that only repeats the node's text adds nothing, and content
+  // fallback gives one to every link, button and heading. Keep it when it says
+  // something the text does not: inline markup, an aria-label, an alt, a label
+  // from elsewhere. find and click read the name from the page, not from the
+  // tree, so omitting it here loses no way to match.
+  if (name && name !== truncateText(text.replace(/\s+/g, " "))) node.name = name;
 
   if (children.length > 0) node.children = children;
 
@@ -417,36 +435,77 @@ const INPUT_ROLES: ReadonlyMap<string, string> = new Map([
   ["reset", "button"],
 ]);
 
-// Inputs whose contents must never reach a snapshot. Covers the explicit
-// password type plus the autocomplete tokens browsers use for secrets.
+// Fields whose contents must never reach a snapshot: the shared rule in
+// shared/sensitive-field.ts, which the trace interceptor applies too, plus
+// every field this page has shown as a password.
 const REDACTED = "[redacted]";
 
-const SENSITIVE_AUTOCOMPLETE = new Set([
-  "current-password",
-  "new-password",
-  "one-time-code",
-  "cc-number",
-  "cc-csc",
-  "cc-exp",
-  "cc-exp-month",
-  "cc-exp-year",
-]);
+// A show-password toggle flips the field to type=text, after which the type
+// alone no longer says it was a password. The page's own scripts do the
+// flipping, so the only way to know is to have been watching: every field seen
+// as a password stays in this set for the life of the page.
+//
+// Limits, both on purpose. A toggle that happened inside a shadow root before
+// the first snapshot was not watched, and the name and autocomplete hints are
+// what catch that field. And the set belongs to this content script, so a
+// fresh one (after the extension reloads) starts it empty.
+const everPassword = new WeakSet<Element>();
+
+const watchedRoots = new WeakSet<Node>();
+
+let typeObserver: MutationObserver | null = null;
+
+function isPasswordType(element: PageElement): boolean {
+  return String(element.type || "").toLowerCase() === "password";
+}
+
+function rememberPasswords(records: ReadonlyArray<MutationRecord>): void {
+  for (const record of records) {
+    const target = asPageElement(record.target);
+
+    if (String(record.oldValue || "").toLowerCase() === "password" || isPasswordType(target)) {
+      everPassword.add(target);
+    }
+  }
+}
+
+/**
+ * Starts remembering which fields in `root` are or become passwords. main.ts
+ * covers the document as the script loads, and each snapshot covers every open
+ * shadow root then on the page, since an observer on the document does not see
+ * into those. Watching a root twice does nothing.
+ */
+export function watchForPasswordFields(root: QueryRoot): void {
+  if (typeof MutationObserver !== "function" || watchedRoots.has(root)) return;
+
+  typeObserver ??= new MutationObserver(rememberPasswords);
+  watchedRoots.add(root);
+  typeObserver.observe(root, { subtree: true, attributes: true, attributeFilter: ["type"], attributeOldValue: true });
+
+  for (const field of root.querySelectorAll<PageElement>("input")) {
+    if (isPasswordType(field)) everPassword.add(field);
+  }
+}
 
 function isSensitiveInput(element: PageElement): boolean {
   const tag = element.tagName ? element.tagName.toLowerCase() : "";
 
-  if (tag !== "input") return false;
+  if (tag !== "input" && tag !== "textarea") return false;
 
-  if ((element.type || "").toLowerCase() === "password") return true;
+  if (everPassword.has(element)) return true;
 
-  const autocomplete = element.getAttribute("autocomplete");
-
-  if (!autocomplete) return false;
-
-  return autocomplete
-    .toLowerCase()
-    .split(/\s+/)
-    .some((token) => SENSITIVE_AUTOCOMPLETE.has(token));
+  return isSensitiveField({
+    tag,
+    type: element.type,
+    autocomplete: element.getAttribute("autocomplete"),
+    hints: [
+      element.getAttribute("name"),
+      element.id,
+      element.getAttribute("aria-label"),
+      element.getAttribute("inputmode"),
+      element.getAttribute("autocomplete"),
+    ],
+  });
 }
 
 function getInputRole(element: PageElement): string {
@@ -498,13 +557,118 @@ export function getAccessibleName(element: PageElement): string | null {
   // Alt text for images
   if (element.alt) return element.alt;
 
-  // Title attribute
-  if (element.title) return element.title;
+  // Title attribute. A role named by its content only falls back to it below:
+  // title is a tooltip, so `<a title="Read the full story">Read more</a>` is
+  // "Read more", and the title is what is left when the content says nothing.
+  const fromContent = NAME_FROM_CONTENT_ROLES.has(getRole(element) ?? "");
+
+  if (element.title && !fromContent) return element.title;
 
   // Placeholder for inputs
   if (element.placeholder) return element.placeholder;
 
+  // Name from content (WAI-ARIA). Without it a link such as
+  // `Human <b>Brain</b> Organoids` has no name, and the tree shows only its own
+  // text nodes ("Human  Organoids") with "Brain" as a separate child, so the
+  // label reads out of order or, when every word sits in a child, not at all.
+  if (fromContent) {
+    const text = contentName(element);
+
+    if (text) return text;
+
+    if (element.title) return element.title;
+  }
+
   return null;
+}
+
+// Roles whose name is the text they contain, per the ARIA name-from-content
+// list, limited to the ones a page uses as controls and landmarks of text.
+// Rows and cells are left out on purpose: a table row named by its whole row
+// would repeat every cell's text on every row of the tree.
+const NAME_FROM_CONTENT_ROLES: ReadonlySet<string> = new Set([
+  "link",
+  "button",
+  "tab",
+  "menuitem",
+  "menuitemcheckbox",
+  "menuitemradio",
+  "option",
+  "treeitem",
+  "heading",
+  "switch",
+  "checkbox",
+  "radio",
+  "tooltip",
+]);
+
+// ARIA lets an embedded control contribute its value to the name around it.
+// Here it contributes nothing: the snapshot withholds the value of a password
+// or card field, and a name is the one other place it could leak.
+const NAME_SKIPPED_TAGS: ReadonlySet<string> = new Set(["input", "textarea", "select"]);
+
+// The nodes a user sees under an element: its open shadow root in place of its
+// light children, and a slot's assigned nodes (text included) in place of the
+// slot's own. renderedChildren, but with the text nodes.
+function renderedChildNodes(element: PageElement): Array<Node> {
+  if (element.shadowRoot) return Array.from(element.shadowRoot.childNodes);
+
+  if (typeof element.assignedNodes === "function") return element.assignedNodes({ flatten: true });
+
+  return Array.from(element.childNodes);
+}
+
+// The ARIA text alternative of an element's content, in document order. This
+// walks the nodes rather than reading innerText so that it follows the same
+// rules as the rest of the snapshot: whatever isVisible drops (aria-hidden,
+// display:none) contributes nothing, and form controls are skipped by tag. An
+// icon `<svg aria-hidden>` beside a label therefore does not pollute the name.
+// It stays cheap because it stops once it has more than a name can hold.
+function contentName(element: PageElement): string {
+  const parts: Array<string> = [];
+  let length = 0;
+
+  const add = (part: string): void => {
+    parts.push(part);
+    length += part.length;
+  };
+
+  const walk = (node: Node, depth: number): void => {
+    // Padding spaces collapse when the parts are joined, so allow headroom
+    // before declaring the name long enough.
+    if (length > MAX_TEXT_CHARS * 2 || depth > MAX_TREE_DEPTH) return;
+
+    if (node.nodeType === Node.TEXT_NODE) {
+      add(node.textContent ?? "");
+
+      return;
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+
+    const child = asPageElement(node);
+
+    if (!isVisible(child) || NAME_SKIPPED_TAGS.has(child.tagName.toLowerCase())) return;
+
+    // A nested element that names itself (an icon with aria-label, an image
+    // with alt) is read by that name rather than by its insides.
+    const label = child.getAttribute("aria-label") || child.alt;
+    // Block-level children are separate runs of text, so `<div>A</div>
+    // <div>B</div>` reads "A B" and not "AB". Inline ones stay joined.
+    const display = window.getComputedStyle(child).display;
+    const separate = display !== "inline" && display !== "contents";
+
+    if (separate) add(" ");
+
+    if (label) add(label);
+    else for (const grandchild of renderedChildNodes(child)) walk(grandchild, depth + 1);
+
+    if (separate) add(" ");
+  };
+
+  for (const child of renderedChildNodes(element)) walk(child, 0);
+
+  return truncateText(parts.join("").replace(/\s+/g, " ").trim());
 }
 
 /** A node an id can be looked up in: a document or a shadow root, not a detached element. */

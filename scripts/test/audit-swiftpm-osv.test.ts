@@ -7,14 +7,19 @@ import { describe, expect, test } from "vitest";
 import {
   type Fetcher,
   type Output,
+  type Query,
+  HttpError,
+  OSV_MAX_PAGES,
   OSV_QUERY_BATCH_URL,
+  OSV_RETRY_BACKOFF_SECONDS,
   Pin,
   buildQueries,
   collectVulnerabilities,
   loadPins,
   main,
+  queryOsv,
 } from "../src/audit-swiftpm-osv.ts";
-import { get, isJsonArray, parseJson } from "../src/python.ts";
+import { type Json, RuntimeError, get, isJsonArray, parseJson } from "../src/python.ts";
 
 describe("AuditSwiftPMOSVTests", () => {
   test("load_pins reads Swift Package.resolved", () => {
@@ -89,6 +94,100 @@ describe("AuditSwiftPMOSVTests", () => {
   });
 });
 
+function batchResponse(...results: Json[]): Response {
+  return Response.json({ results });
+}
+
+function makeQueries(count: number): Query[] {
+  const pin = new Pin({
+    identity: "swift-nio",
+    location: "https://github.com/apple/swift-nio.git",
+    version: "2.97.0",
+    revision: "abc123",
+    source: "Package.resolved",
+  });
+
+  return Array.from({ length: count }, (_, n) => ({ pin, payload: { commit: `rev${n}` } }));
+}
+
+describe("QueryOSVTests", () => {
+  /** Runs queryOsv against scripted fetch outcomes (a Response, or an Error to throw)
+      and returns what it sent, so a test can read the request bodies as well as the
+      result. The backoffs it would have slept are recorded instead. */
+  function runQuery(responses: (Response | Error)[], count = 2) {
+    const sent: Json[] = [];
+    const sleeps: number[] = [];
+
+    const fetcher: Fetcher = async (_url, init) => {
+      sent.push(get(parseJson(typeof init.body === "string" ? init.body : ""), "queries"));
+
+      const outcome = responses.shift();
+
+      if (outcome === undefined) throw new Error("no scripted response left");
+
+      if (outcome instanceof Error) throw outcome;
+
+      return outcome;
+    };
+
+    const result = queryOsv(makeQueries(count), fetcher, async (seconds) => {
+      sleeps.push(seconds);
+    });
+
+    return { result, sent, sleeps };
+  }
+
+  const httpError = (status: number) => new Response("", { status, statusText: "error" });
+
+  test("follows next_page_token and merges pages", async () => {
+    const run = runQuery([
+      batchResponse({ vulns: [{ id: "OSV-1" }], next_page_token: "tok" }, {}),
+      batchResponse({ vulns: [{ id: "OSV-2" }] }),
+    ]);
+
+    const results = await run.result;
+
+    expect(results[0]?.vulns?.map((vulnerability) => vulnerability.id)).toEqual(["OSV-1", "OSV-2"]);
+    expect(results[1]?.vulns).toEqual([]);
+    // Only the query that still had pages is asked again, with its token.
+    expect(run.sent[1]).toEqual([{ commit: "rev0", page_token: "tok" }]);
+  });
+
+  test("gives up when pagination never ends", async () => {
+    const endless = Array.from({ length: OSV_MAX_PAGES }, () => batchResponse({ vulns: [], next_page_token: "again" }));
+    const run = runQuery(endless, 1);
+
+    await expect(run.result).rejects.toBeInstanceOf(RuntimeError);
+  });
+
+  test("retries once after a network error", async () => {
+    const run = runQuery([
+      new TypeError("fetch failed", { cause: new Error("connection reset") }),
+      batchResponse({ vulns: [{ id: "OSV-1" }] }, {}),
+    ]);
+
+    const results = await run.result;
+
+    expect(run.sent).toHaveLength(2);
+    expect(run.sleeps).toEqual([OSV_RETRY_BACKOFF_SECONDS]);
+    expect(results[0]?.vulns).toEqual([{ id: "OSV-1" }]);
+  });
+
+  test("retries a server error but only once", async () => {
+    const run = runQuery([httpError(503), httpError(503)]);
+
+    await expect(run.result).rejects.toBeInstanceOf(HttpError);
+    expect(run.sleeps).toHaveLength(1);
+  });
+
+  test("does not retry a client error", async () => {
+    const run = runQuery([httpError(400)]);
+
+    await expect(run.result).rejects.toBeInstanceOf(HttpError);
+    expect(run.sleeps).toEqual([]);
+  });
+});
+
 // The CLI end to end, with OSV answered in-process so the suite stays offline.
 describe("main", () => {
   const lockfile = {
@@ -121,7 +220,7 @@ describe("main", () => {
 
       writeFileSync(path, JSON.stringify(lockfile));
 
-      const code = await main([path], fetcher, output);
+      const code = await main([path], fetcher, output, async () => {});
 
       return { code, stdout, stderr, requests, path };
     } finally {
@@ -154,6 +253,8 @@ describe("main", () => {
 
     const failed = await audit(() => new Response("", { status: 503, statusText: "Service Unavailable" }));
 
+    // A server error is retried once before it counts.
+    expect(failed.requests).toHaveLength(2);
     expect(failed.code).toBe(2);
     expect(failed.stderr).toEqual(["::error::SwiftPM OSV audit failed: HTTP Error 503: Service Unavailable"]);
   });

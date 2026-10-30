@@ -23,6 +23,12 @@ import {
 
 export const OSV_QUERY_BATCH_URL = "https://api.osv.dev/v1/querybatch";
 
+export const OSV_ATTEMPTS = 2;
+
+export const OSV_RETRY_BACKOFF_SECONDS = 5;
+
+export const OSV_MAX_PAGES = 20;
+
 const DESCRIPTION = "Audit SwiftPM Package.resolved dependencies with OSV.dev.";
 
 /** Python's urllib request timeout. */
@@ -30,6 +36,11 @@ const TIMEOUT_MS = 30_000;
 
 /** The HTTP client, injectable so tests stay offline. */
 export type Fetcher = (url: string, init: RequestInit) => Promise<Response>;
+
+/** `time.sleep`, injectable so a test does not wait out the retry backoff. */
+export type Sleeper = (seconds: number) => Promise<void>;
+
+const sleepFor: Sleeper = (seconds) => new Promise((resolve) => setTimeout(resolve, seconds * 1000));
 
 /** Where main() prints; a test can collect the lines instead. */
 export interface Output {
@@ -85,10 +96,24 @@ export interface OsvResult {
   readonly vulns?: readonly { readonly id: string }[];
 }
 
-/** urllib.error.URLError and HTTPError: a request that did not produce a 2xx response. */
+/** urllib.error.URLError: a request that did not produce a 2xx response. */
 export class UrlError extends Error {
   static {
     this.prototype.name = "urllib.error.URLError";
+  }
+}
+
+/** urllib.error.HTTPError: a response arrived, with a non-2xx status. */
+export class HttpError extends UrlError {
+  static {
+    this.prototype.name = "urllib.error.HTTPError";
+  }
+
+  readonly code: number;
+
+  constructor(code: number, reason: string) {
+    super(`HTTP Error ${code}: ${reason}`);
+    this.code = code;
   }
 }
 
@@ -199,41 +224,113 @@ function requestFailure(cause: unknown): Error {
   return new UrlError(`<urlopen error ${reason instanceof Error ? reason.message : String(reason)}>`);
 }
 
-function parseResult(result: Json): OsvResult {
+/** One page of a batch result: its advisories, and the token for the next page if there is one. */
+interface OsvPage {
+  readonly vulns: readonly { readonly id: string }[];
+  readonly nextPageToken: Json;
+}
+
+function parsePage(result: Json): OsvPage {
   const vulns = get(result, "vulns", []);
 
   if (!isJsonArray(vulns)) throw new PythonTypeError("vulns must be a list");
 
-  return { vulns: vulns.map((vulnerability) => ({ id: text(item(vulnerability, "id"), "id") })) };
+  return {
+    vulns: vulns.map((vulnerability) => ({ id: text(item(vulnerability, "id"), "id") })),
+    nextPageToken: get(result, "next_page_token"),
+  };
 }
 
-export async function queryOsv(queries: readonly Query[], fetcher: Fetcher = fetch): Promise<OsvResult[]> {
-  let body: string;
+export function isTransient(error: UrlError): boolean {
+  if (error instanceof HttpError) return error.code === 429 || error.code >= 500;
 
+  return true;
+}
+
+async function fetchBody(payloads: readonly JsonObject[], fetcher: Fetcher): Promise<string> {
   try {
     const response = await fetcher(OSV_QUERY_BATCH_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ queries: queries.map((query) => query.payload) }),
+      body: JSON.stringify({ queries: payloads }),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
 
-    if (!response.ok) throw new UrlError(`HTTP Error ${response.status}: ${response.statusText}`);
+    if (!response.ok) throw new HttpError(response.status, response.statusText);
 
-    body = await response.text();
+    return await response.text();
   } catch (cause) {
     throw cause instanceof UrlError ? cause : requestFailure(cause);
+  }
+}
+
+async function postQuerybatch(payloads: readonly JsonObject[], fetcher: Fetcher, sleep: Sleeper): Promise<OsvPage[]> {
+  let body = "";
+
+  // One network blip must not fail the scheduled audit, but a second failure
+  // in a row is a real outage and should say so.
+  for (let attempt = 0; attempt < OSV_ATTEMPTS; attempt += 1) {
+    try {
+      body = await fetchBody(payloads, fetcher);
+
+      break;
+    } catch (cause) {
+      if (attempt === OSV_ATTEMPTS - 1 || !(cause instanceof UrlError) || !isTransient(cause)) throw cause;
+
+      await sleep(OSV_RETRY_BACKOFF_SECONDS);
+    }
   }
 
   const results = get(parseJson(body), "results", []);
 
   if (!isJsonArray(results)) throw new PythonTypeError("results must be a list");
 
-  if (results.length !== queries.length) {
-    throw new RuntimeError(`OSV returned ${results.length} results for ${queries.length} queries`);
+  if (results.length !== payloads.length) {
+    throw new RuntimeError(`OSV returned ${results.length} results for ${payloads.length} queries`);
   }
 
-  return results.map(parseResult);
+  return results.map(parsePage);
+}
+
+export async function queryOsv(
+  queries: readonly Query[],
+  fetcher: Fetcher = fetch,
+  sleep: Sleeper = sleepFor,
+): Promise<OsvResult[]> {
+  // A query with more matches than one response holds comes back with a
+  // next_page_token and the first page only. Reading just that page would
+  // report a package as clean when its remaining advisories sit on page two.
+  const merged: { readonly vulns: { readonly id: string }[] }[] = queries.map(() => ({ vulns: [] }));
+  let pending = queries.map((query, index) => ({ index, payload: query.payload }));
+
+  for (let page = 0; page < OSV_MAX_PAGES; page += 1) {
+    if (pending.length === 0) return merged;
+
+    const results = await postQuerybatch(
+      pending.map(({ payload }) => payload),
+      fetcher,
+      sleep,
+    );
+
+    const following: typeof pending = [];
+
+    pending.forEach(({ index, payload }, position) => {
+      const result = results[position];
+
+      if (result === undefined) return;
+
+      merged[index]?.vulns.push(...result.vulns);
+
+      if (truthy(result.nextPageToken)) {
+        following.push({ index, payload: { ...payload, page_token: result.nextPageToken } });
+      }
+    });
+    pending = following;
+  }
+
+  if (pending.length > 0) throw new RuntimeError(`OSV still paginating after ${OSV_MAX_PAGES} pages`);
+
+  return merged;
 }
 
 export function collectVulnerabilities(queries: readonly Query[], results: readonly OsvResult[]): Vulnerability[] {
@@ -266,6 +363,7 @@ export async function main(
   argv: readonly string[],
   fetcher: Fetcher = fetch,
   output: Output = PROCESS_OUTPUT,
+  sleep: Sleeper = sleepFor,
 ): Promise<number> {
   const parsed = parseArguments(
     {
@@ -292,7 +390,7 @@ export async function main(
       return 0;
     }
 
-    results = await queryOsv(queries, fetcher);
+    results = await queryOsv(queries, fetcher, sleep);
   } catch (cause) {
     const reported =
       cause instanceof OsError ||

@@ -192,7 +192,24 @@ test("a returned object shaped like a failure is still just a value", async () =
   assert.equal(await valueOf(run('({ __error: "not mine" })')), '{"__error":"not mine"}');
   assert.equal(await valueOf(run("({ __cspBlocked: true })")), '{"__cspBlocked":true}');
   assert.equal(await valueOf(run("({ ok: false, error: 'x' })")), '{"ok":false,"error":"x"}');
-  assert.deepEqual(ran, ["MAIN", "MAIN", "MAIN"]);
+  assert.equal(
+    await valueOf(run("({ ok: false, error: 'forged', cspBlocked: true })")),
+    '{"ok":false,"error":"forged","cspBlocked":true}',
+  );
+  assert.equal(await valueOf(run("({ ok: true, value: 'forged' })")), '{"ok":true,"value":"forged"}');
+  assert.deepEqual(ran, ["MAIN", "MAIN", "MAIN", "MAIN", "MAIN"]);
+});
+
+test("a value forged on the page's own globals does not rerun the code", async () => {
+  const ran: Array<"MAIN" | "ISOLATED" | undefined> = [];
+  const run = backgroundHarness([], ran);
+
+  // The shape of the real exploit: page state that the user's code returns,
+  // with side effects before it.
+  const code = "globalThis.cartState = { __cspBlocked: true }; return globalThis.cartState";
+
+  assert.equal(await valueOf(run(code)), '{"__cspBlocked":true}');
+  assert.deepEqual(ran, ["MAIN"]);
 });
 
 test("throwing an empty string is still a failure", async () => {

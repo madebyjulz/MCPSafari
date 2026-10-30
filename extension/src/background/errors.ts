@@ -69,6 +69,34 @@ export const permissionRequired = (origin: string | null, pending: boolean): Too
   });
 };
 
+/**
+ * The tab `select_tab` pinned is gone. Not retryable as it stands: repeating the
+ * call finds the same absence, and the caller has to choose a tab again.
+ */
+export const tabClosed = (tabId: number): ToolError =>
+  new ToolError({
+    message:
+      `The tab pinned with select_tab (id ${tabId}) no longer exists, so this call was not run. ` +
+      `Call tabs_context to list the open tabs, then select_tab again.`,
+    code: "tab_closed",
+    retryable: false,
+    recoveryAction: "call_tabs_context",
+  });
+
+/**
+ * The tab was activated, but another one is showing in its window now, so what
+ * was about to be captured or typed would have reached the wrong page.
+ */
+export const tabNotShowing = (purpose: string): ToolError =>
+  new ToolError({
+    message:
+      `The tab is no longer the one showing in its window (another tab was activated), so ${purpose} ` +
+      "would have reached the wrong page. Retry the call.",
+    code: "tab_not_showing",
+    retryable: true,
+    recoveryAction: "retry",
+  });
+
 /** A failure the content script reported, with its code and recovery intact. */
 export const fromContentFailure = (response: Extract<ContentResponse, { readonly data: null }>): ToolError => {
   const code = Schema.is(ToolErrorCode)(response.errorCode) ? response.errorCode : "extension_error";
@@ -91,9 +119,15 @@ export interface BridgeResponse {
   readonly errorCode?: string;
   readonly retryable?: boolean;
   readonly recoveryAction?: string;
+  /**
+   * The tab this request acted on, or null for a tool that acts on none. Handed
+   * back so a caller sequencing several untabbed calls can pin the rest of the
+   * sequence to the first one's tab.
+   */
+  readonly resolvedTabId: number | null;
 }
 
-export const failureResponse = (id: string, error: ToolError): BridgeResponse => ({
+export const failureResponse = (id: string, error: ToolError, resolvedTabId: number | null = null): BridgeResponse => ({
   id,
   success: false,
   data: null,
@@ -101,4 +135,5 @@ export const failureResponse = (id: string, error: ToolError): BridgeResponse =>
   errorCode: error.code,
   retryable: error.retryable,
   recoveryAction: error.recoveryAction,
+  resolvedTabId,
 });

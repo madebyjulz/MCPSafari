@@ -56,7 +56,11 @@ interface LoadOptions {
   readonly fetch?: StubFetch;
 }
 
+/** What the page's fetch hands the native one, as received. */
+type NativeFetchCall = readonly [input: RequestInfo | URL, init?: RequestInit | null];
+
 interface Loaded {
+  readonly nativeFetchCalls: ReadonlyArray<NativeFetchCall>;
   /** This page's XMLHttpRequest, whose prototype the interceptor patched. */
   readonly XMLHttpRequest: typeof FakeXhr;
   readonly observer: ObserverState;
@@ -78,7 +82,11 @@ class FakeXhr {
   onload: (() => void) | null = null;
   readonly #listeners: Array<() => void> = [];
 
-  open(_method: string, _url: string): void {
+  /** What the native open was handed, exactly as the page passed it. */
+  opened: ReadonlyArray<unknown> = [];
+
+  open(...args: ReadonlyArray<unknown>): void {
+    this.opened = args;
     this.readyState = 1;
     this.status = 0;
   }
@@ -108,6 +116,7 @@ function loadInterceptor({
 }: LoadOptions = {}): Loaded {
   let observer: ObserverState | undefined;
   const XMLHttpRequest = class extends FakeXhr {};
+  const nativeFetchCalls: Array<NativeFetchCall> = [];
 
   class PerformanceObserver {
     constructor() {
@@ -129,7 +138,12 @@ function loadInterceptor({
 
   const window: StubWindow = {
     addEventListener() {},
-    fetch,
+    // Records exactly the arguments it was handed, as many as there were.
+    fetch: (...args: NativeFetchCall) => {
+      nativeFetchCalls.push(args);
+
+      return fetch(...args);
+    },
     postMessage() {},
   };
 
@@ -147,7 +161,12 @@ function loadInterceptor({
 
   // SAFETY: the script constructs its PerformanceObserver while loading, which
   // sets the observer state, and installs __mcpGetNetworkRequests on the stub.
-  return { XMLHttpRequest, observer: observer as ObserverState, window: window as StubWindow & NetworkApi };
+  return {
+    XMLHttpRequest,
+    nativeFetchCalls,
+    observer: observer as ObserverState,
+    window: window as StubWindow & NetworkApi,
+  };
 }
 
 test("resource reads expose buffered subresource timings without changing the default feed", () => {
@@ -444,4 +463,95 @@ test("an XHR re-opened mid-flight records only the request that finished", () =>
     readNetwork(window, { type: "xhr" }).map((r) => [r.method, r.url, r.status]),
     [["POST", "https://example.test/sent", 200]],
   );
+});
+
+// ─── Calls the native functions accept ───────────────────────────────
+
+// The wrappers sit in front of every request the page makes, so a capture bug
+// is a broken page.
+
+test("fetch with a null init reaches the native call unchanged", async () => {
+  const { window, nativeFetchCalls } = loadInterceptor();
+
+  const response = await window.fetch("https://example.test/api/feed", null);
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(nativeFetchCalls, [["https://example.test/api/feed", null]]);
+});
+
+test("fetch with a URL object or an odd init is still captured", async () => {
+  const { window } = loadInterceptor();
+
+  // SAFETY: a page may pass any value as the method; native fetch coerces it.
+  await window.fetch(new URL("https://example.test/api/feed"), { method: 5 as unknown as string });
+  await window.fetch("https://example.test/api/feed", undefined);
+
+  assert.deepEqual(
+    readNetwork(window, { type: "fetch" }).map((r) => [r.method, r.url]),
+    [
+      ["5", "https://example.test/api/feed"],
+      ["GET", "https://example.test/api/feed"],
+    ],
+  );
+});
+
+test("a throwing init getter does not turn into a wrapper failure", async () => {
+  const { window } = loadInterceptor();
+
+  const init = {
+    get method(): string {
+      throw new Error("getter");
+    },
+  };
+
+  // The native stand-in does not read it, so the call succeeds; what matters
+  // is that the capture's own read of it could not take the request down.
+  const response = await window.fetch("https://example.test/api/feed", init);
+
+  assert.equal(response.status, 200);
+});
+
+test("XMLHttpRequest.open tolerates a method that is not a string", () => {
+  const { XMLHttpRequest } = loadInterceptor();
+
+  for (const method of [undefined, null, 5, { toString: () => "get" }]) {
+    const xhr = new XMLHttpRequest();
+
+    assert.doesNotThrow(() => xhr.open(method, "https://example.test/x"), String(method));
+    // The native open sees exactly what the page passed.
+    assert.equal(xhr.opened[0], method);
+  }
+});
+
+test("XMLHttpRequest.open with a lowercase method is captured upper-cased", () => {
+  const { XMLHttpRequest, window } = loadInterceptor();
+  const xhr = new XMLHttpRequest();
+
+  xhr.open("post", "https://example.test/api/feed");
+  xhr.send();
+  xhr.respond(200);
+
+  assert.deepEqual(
+    readNetwork(window, { type: "xhr" }).map((r) => [r.method, r.url]),
+    [["POST", "https://example.test/api/feed"]],
+  );
+});
+
+test("XMLHttpRequest.open tolerates a url that cannot become a string, and the send is not captured", () => {
+  const { XMLHttpRequest, window } = loadInterceptor();
+  const xhr = new XMLHttpRequest();
+
+  const hostile = {
+    toString(): string {
+      throw new Error("no string for you");
+    },
+  };
+
+  xhr.open("GET", "https://example.test/first");
+  assert.doesNotThrow(() => xhr.open("GET", hostile));
+  assert.doesNotThrow(() => xhr.send());
+  xhr.respond(200);
+
+  // Not recorded under the previous open's URL either.
+  assert.deepEqual(readNetwork(window, { type: "xhr" }), []);
 });

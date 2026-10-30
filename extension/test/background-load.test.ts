@@ -110,7 +110,7 @@ test("the built background starts up in a page with only Safari's globals", asyn
   await vi.waitFor(() =>
     assert.deepEqual(
       sockets.map((socket) => socket.url),
-      ["ws://localhost:8089"],
+      ["ws://127.0.0.1:8089"],
     ),
   );
   await vi.waitFor(() =>

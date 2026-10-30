@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { afterEach, test, vi } from "vitest";
 
 import { Connections } from "../src/background/Connections.ts";
+import { serverHandshake } from "./helpers/bridge-handshake.ts";
 import { fakeBrowser, launch, settle, stopAll } from "./helpers/fake-browser.ts";
 
 afterEach(stopAll);
@@ -22,14 +23,14 @@ async function loadBackground() {
     api,
     /**
      * Drives one socket past the handshake so later frames take the request
-     * path, and clears the auth frame so assertions see only new sends.
+     * path, and clears the handshake frames so assertions see only new sends.
      */
     async openAuthenticated() {
       const socket = harness.sockets.at(-1);
 
       assert.ok(socket, "the port should have been dialled once its token loaded");
       socket.open();
-      socket.receive(JSON.stringify({ auth: "ok" }));
+      await serverHandshake(socket, { token: "token", port: 8089 });
       await vi.waitFor(async () => {
         const { connections } = await harness.run(Connections.use((tracked) => tracked.inspect));
 

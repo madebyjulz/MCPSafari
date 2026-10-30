@@ -165,12 +165,21 @@ function installNetworkInterceptor(): void {
 
     if (unfinished) pendingCycles.get(this)?.splice(0);
 
-    this.__mcpMeta = {
-      method: method.toUpperCase(),
-      url: String(url).slice(0, 2048),
-      truncated: String(url).length > 2048,
-      type: "xhr",
-    };
+    // Observing a request must never be the reason it fails. The native open
+    // has already accepted the arguments, coercing them as it does, so the
+    // capture coerces them the same way and quietly gives up if it cannot.
+    try {
+      const target = String(url);
+
+      this.__mcpMeta = {
+        method: String(method).toUpperCase(),
+        url: target.slice(0, 2048),
+        truncated: target.length > 2048,
+        type: "xhr",
+      };
+    } catch {
+      delete this.__mcpMeta;
+    }
 
     return result;
   };
@@ -219,7 +228,8 @@ function installNetworkInterceptor(): void {
     // native fetch accepts, so a failure here only costs the record its detail.
     try {
       const request = input instanceof Request ? input : null;
-      method = (init?.method || request?.method || "GET").toUpperCase();
+      // A page may pass a method that is not a string; native fetch coerces it.
+      method = String(init?.method || request?.method || "GET").toUpperCase();
       url = typeof input === "string" ? input : input instanceof Request ? input.url : String(input);
     } catch {
       /* recorded with what is known */

@@ -11,7 +11,7 @@ import { SelectedTab } from "../SelectedTab.ts";
 import { TabAccess } from "../TabAccess.ts";
 import { decodeParams } from "./params.ts";
 import { evaluateUserCode, readPageContext, type Evaluation, type PageContext } from "../injected.ts";
-import { requireTopFrameTarget, SCREENSHOT_TOP_FRAME_ONLY, windowOf } from "./tabs.ts";
+import { assertTabShowing, requireTopFrameTarget, SCREENSHOT_TOP_FRAME_ONLY, windowOf } from "./tabs.ts";
 
 // ─── Screenshot Handler ─────────────────────────────────────────────
 
@@ -65,6 +65,13 @@ export const handleScreenshot = Effect.fn("screenshot")(function* (params: Conte
   const context = yield* capturePageContext(tabId);
   const windowId = yield* windowOf(tab);
 
+  // captureVisibleTab takes the window, not the tab, and returns whichever tab
+  // is showing. The activation above is a request that the user's next click
+  // can undo, so it is confirmed on both sides of the capture: before, so a
+  // stale tab is not captured, and after, so a switch during the capture does
+  // not return another page's pixels under this tab's metadata.
+  yield* assertTabShowing(tabId, windowId, "the screenshot");
+
   // Deliberately not `ensure`: the context read above is allowed to fail and
   // still produce a picture, and a probe would turn that graceful degradation
   // into a refusal. A capture is sub-second when it is permitted at all, so a
@@ -73,6 +80,8 @@ export const handleScreenshot = Effect.fn("screenshot")(function* (params: Conte
     callBrowser((api) => api.tabs.captureVisibleTab(windowId, { format: "png" })),
     tabId,
   );
+
+  yield* assertTabShowing(tabId, windowId, "the screenshot");
 
   const result: ScreenshotResult = {
     // Raw base64, data URI prefix stripped
@@ -172,6 +181,11 @@ export const handleResizeWindow = Effect.fn("resize_window")(function* (params: 
   // window and the user clicked into another, the resize landed on the user's
   // and a screenshot afterwards did not match the viewport that was asked for.
   const tabId = tabIdParam || (yield* (yield* SelectedTab).activeTabId);
+
+  // The `tabs.get` below parks on Safari's dialog like every other call that
+  // reads the tab, so an ungranted tab rode the bridge timeout here.
+  yield* (yield* TabAccess).ensure(tabId);
+
   const windowId = yield* windowOf(yield* callBrowser((api) => api.tabs.get(tabId)));
 
   const size: Windows.UpdateUpdateInfoType = {};

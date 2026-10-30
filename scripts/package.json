@@ -6,7 +6,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run --project unit",
-    "test:mcp": "vitest run --project mcp"
+    "test:mcp": "pnpm --filter mcpsafari-extension exec tsdown -F background.js && vitest run --project mcp"
   },
   "devDependencies": {
     "@types/node": "catalog:",

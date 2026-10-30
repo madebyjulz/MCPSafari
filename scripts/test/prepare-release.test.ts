@@ -39,7 +39,9 @@ describe("ReleasePreparationTests", () => {
     const fixtures = {
       "MCPSafari/MCPSafari Extension/Resources/manifest.json": '{"version":"0.3.2"}',
       "MCPServer/Sources/mcp-safari/Diagnostics.swift": 'static let version = "0.3.2"',
-      "MCPSafari/MCPSafari.xcodeproj/project.pbxproj": "MARKETING_VERSION = 0.3.2;",
+      "MCPSafari/MCPSafari.xcodeproj/project.pbxproj":
+        "CURRENT_PROJECT_VERSION = 31;\nMARKETING_VERSION = 0.3.2;\n" +
+        "CURRENT_PROJECT_VERSION = 31;\nMARKETING_VERSION = 0.3.2;",
     };
 
     for (const [name, contents] of Object.entries(fixtures)) {
@@ -111,6 +113,20 @@ describe("ReleasePreparationTests", () => {
   test("an individual component version mismatch fails", () => {
     writeFileSync(join(root, "MCPSafari/MCPSafari Extension/Resources/manifest.json"), '{"version":"0.3.1"}');
     expectValueError(() => releaseNotes("v0.3.2", root));
+  });
+
+  test("build number must be identical across targets", () => {
+    writeFileSync(
+      join(root, "MCPSafari/MCPSafari.xcodeproj/project.pbxproj"),
+      "CURRENT_PROJECT_VERSION = 31;\nMARKETING_VERSION = 0.3.2;\n" +
+        "CURRENT_PROJECT_VERSION = 32;\nMARKETING_VERSION = 0.3.2;",
+    );
+    expectValueError(() => releaseNotes("v0.3.2", root), /CURRENT_PROJECT_VERSION differs/);
+  });
+
+  test("a project with no build number fails", () => {
+    writeFileSync(join(root, "MCPSafari/MCPSafari.xcodeproj/project.pbxproj"), "MARKETING_VERSION = 0.3.2;");
+    expectValueError(() => releaseNotes("v0.3.2", root), /build number/);
   });
 
   test("checksums are complete, relative and repeatable", () => {

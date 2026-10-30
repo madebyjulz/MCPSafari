@@ -33,6 +33,7 @@ interface NativeTarget {
 interface FocusDocument {
   activeElement: NativeTarget | null;
   querySelector?: () => NativeTarget;
+  hasFocus(): boolean;
 }
 
 function contentHarness(
@@ -89,7 +90,7 @@ test("wait timeouts are retryable", async () => {
 });
 
 test("native input preparation focuses only editable text targets", async () => {
-  const document: FocusDocument = { activeElement: null };
+  const document: FocusDocument = { activeElement: null, hasFocus: () => true };
 
   const editor: NativeTarget = {
     contains: (element) => element === editor,
@@ -119,4 +120,31 @@ test("native input preparation focuses only editable text targets", async () => 
   const unsupported = await call("prepare_native_input", { selector: "button" });
   assert.equal(unsupported.errorCode, "unsupported_native_target");
   assert.equal(unsupported.recoveryAction, "use_synthetic_input");
+});
+
+// The page's active element still names the field while Safari's address bar
+// or find bar holds the keyboard, so typing would land in the bar.
+test("native input preparation refuses when the page does not hold focus", async () => {
+  const document: FocusDocument = { activeElement: null, hasFocus: () => false };
+
+  const editor: NativeTarget = {
+    contains: (element) => element === editor,
+    disabled: false,
+    focus: () => {
+      document.activeElement = editor;
+    },
+    isContentEditable: true,
+    readOnly: false,
+    scrollIntoView() {},
+    tagName: "DIV",
+  };
+
+  document.querySelector = () => editor;
+  const response = await contentHarness(document)("prepare_native_input", { selector: "#editor" });
+
+  assert.equal(response.data, null);
+  assert.equal(response.errorCode, "native_input_focus_failed");
+  assert.equal(response.retryable, true);
+  assert.equal(response.recoveryAction, "retry");
+  assert.match(response.error ?? "", /native typing into <div>/);
 });

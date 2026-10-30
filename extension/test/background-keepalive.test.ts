@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { afterEach, test, vi } from "vitest";
 
 import { Connections } from "../src/background/Connections.ts";
+import { serverHandshake } from "./helpers/bridge-handshake.ts";
 import { fakeBrowser, launch, stopAll } from "./helpers/fake-browser.ts";
 
 const PORT = 8089;
@@ -54,7 +55,7 @@ async function loadBackground() {
 
       assert.ok(socket, "the port should have been dialled");
       socket.open();
-      socket.receive(JSON.stringify({ auth: "ok" }));
+      await serverHandshake(socket, { token: "token-one", port: PORT });
       await vi.waitFor(async () => assert.equal((await port()).connections.get(PORT)?.state, "connected"));
 
       return socket;

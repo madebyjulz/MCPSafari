@@ -4,7 +4,15 @@
  */
 
 import type { ContentParams } from "../shared/protocol.ts";
-import { asPageElement, firesKeypress, keyCode, pointerEvent, toolError, type PageElement } from "./core.ts";
+import {
+  asPageElement,
+  assertPageFocused,
+  firesKeypress,
+  keyCode,
+  pointerEvent,
+  toolError,
+  type PageElement,
+} from "./core.ts";
 import { aimPoint, assertReachable, resolveElement, scrollToTarget, type TargetParams } from "./target.ts";
 
 export interface ScrollParams extends TargetParams {
@@ -316,6 +324,10 @@ export async function dragElement(params: DragParams): Promise<string> {
 // outerWidth-innerWidth difference sits on the left of the content area.
 // Assumes 100% page zoom.
 export function nativePointerPoints(params: NativePointerParams): NativePointerPoints {
+  // The points are screen coordinates, so a Safari window that is not the one
+  // in front would have them land on another application.
+  assertPageFocused("native mouse events");
+
   const toScreen = (cssX: number, cssY: number): ScreenPoint => ({
     x: window.screenX + (window.outerWidth - window.innerWidth) + cssX,
     y: window.screenY + (window.outerHeight - window.innerHeight) + cssY,
@@ -397,7 +409,8 @@ export function nativePointerPoints(params: NativePointerParams): NativePointerP
 
 // A native key reaches whatever Safari has focused; when the chrome (e.g.
 // the address bar) holds focus the page never sees it. Pull focus into
-// the document unless the page already has it.
+// the document unless the page already has it, and say so if that did not
+// work rather than reporting a page ready that is not.
 //
 // <body> takes focus only while it has a tabindex, so one is set for the
 // call and then put back: left behind, it changes how the page tabs and what
@@ -413,6 +426,8 @@ export function prepareNativeKey(): string {
     if (previous === null) body.removeAttribute("tabindex");
     else body.setAttribute("tabindex", previous);
   }
+
+  assertPageFocused("native key events");
 
   return "Page ready for native key";
 }

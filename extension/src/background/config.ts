@@ -2,12 +2,20 @@
 
 import { Context, Duration } from "effect";
 
-export const DEFAULT_PORT = 8089;
+export const BRIDGE_PROTOCOL_VERSION = 2;
 
-export const BRIDGE_PROTOCOL_VERSION = 1;
+/**
+ * The most ports dialled on the strength of a token file alone. There is no port
+ * range to configure here: a server writes a token file for the port it bound,
+ * wherever that is, and the extension dials every port that has one. This only
+ * bounds the connections a token directory full of files can create. It matches
+ * the most ports one server will try (`--port-range`), so any range the server
+ * accepts is found. Ports added in the popup are not counted.
+ */
+export const MAX_DISCOVERED_PORTS = 64;
 
-/** Ports 8089-8098 are auto-managed. */
-export const AUTO_SCAN_RANGE = 10;
+/** The most origins remembered as granted; the one confirmed longest ago goes first. */
+export const MAX_GRANTED_ORIGINS = 500;
 
 export const DEFAULT_PROFILE_ID = "default";
 
@@ -26,10 +34,10 @@ export const MAX_PORT = 65535;
 export interface BackgroundTiming {
   readonly reconnectBase: Duration.Duration;
   readonly reconnectMax: Duration.Duration;
-  /** How long an auto-scanned port may stay gone before it is suppressed. */
+  /** How long a discovered port may stay gone before it is suppressed. */
   readonly autoCleanup: Duration.Duration;
   /**
-   * How many failed attempts an auto-scanned port that has never answered gets
+   * How many failed attempts a discovered port that has never answered gets
    * before it is left alone. One home for it: the two places that read it had
    * drifted to `>= 3` and `> 3`, so whether a port survived its fourth failure
    * depended on which one happened to look first.
@@ -75,11 +83,28 @@ export interface BackgroundTiming {
   readonly permissionCache: Duration.Duration;
 
   // ─── Navigation ──────────────────────────────────────────────────────
+  /**
+   * How long a page load is given to finish, for `navigate` and for the load an
+   * interaction starts. Well under the server's 30-second bridge timeout, which
+   * the dispatch before it and the settling after it also have to fit inside.
+   */
   readonly navigationTimeout: Duration.Duration;
   /** With no sign of a navigation by now, the call settles on the current tab. */
   readonly noNavigationTimeout: Duration.Duration;
   /** A URL change with no `loading` is a same-document navigation; settle once it goes quiet. */
   readonly sameDocumentSettle: Duration.Duration;
+  /**
+   * How long after an interaction is dispatched the tab is watched for a page
+   * load before concluding the interaction started none. A click on a link or a
+   * form submit begins its navigation in the same task as the event, and Safari
+   * reports the load within a few tens of milliseconds, so this is a generous
+   * margin for that report rather than a guess at page speed. It is also what
+   * every click, key press and form change pays when it navigates nowhere,
+   * which is why it is not longer. A navigation the page starts later than this,
+   * from a timer or after a fetch, is not waited for; a `wait` pending when it
+   * begins survives it instead.
+   */
+  readonly navigationStartWindow: Duration.Duration;
 
   // ─── Settling delays ─────────────────────────────────────────────────
   /** After activating a tab and focusing its window for native input. */
@@ -103,6 +128,7 @@ export const BackgroundTiming = Context.Reference<BackgroundTiming>("mcpsafari/b
     navigationTimeout: Duration.seconds(15),
     noNavigationTimeout: Duration.millis(1500),
     sameDocumentSettle: Duration.millis(500),
+    navigationStartWindow: Duration.millis(400),
     nativeFocusSettle: Duration.millis(100),
     screenshotActivateSettle: Duration.millis(300),
     injectionSettle: Duration.millis(100),

@@ -1,6 +1,7 @@
 // Shared plumbing for the content-script tests: the bundle as Safari loads it,
 // and the types of what crosses its runtime.onMessage boundary.
 
+import { Window } from "happy-dom";
 import type { Runtime } from "webextension-polyfill";
 
 import type { ContentParams } from "../../src/shared/protocol.ts";
@@ -54,6 +55,27 @@ export function callThrough(current: () => RuntimeListener | undefined): CallCon
       if (!listener) throw new Error("the content script registered no listener");
       listener({ action, params }, {}, resolve);
     });
+}
+
+/** A happy-dom window running the content script, for behaviour hand-written stand-ins cannot vouch for. */
+export interface Page {
+  readonly window: Window;
+  readonly document: Window["document"];
+  readonly call: CallContent;
+}
+
+/** A fresh window with `markup` as its body and the content script loaded into it. */
+export function loadPage(markup: string): Page {
+  const window = new Window({ url: "https://example.com/app/" });
+  let listener: RuntimeListener | undefined;
+
+  // The content script reads `browser` as a global, and the window is the
+  // global object of the context it runs in.
+  Object.assign(window, { browser: browserStub((fn) => (listener = fn)) });
+  window.document.body.innerHTML = markup;
+  window.eval(contentSource());
+
+  return { window, document: window.document, call: callThrough(() => listener) };
 }
 
 /** Every event-init field the content script passes that some test reads back. */

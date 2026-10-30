@@ -44,6 +44,8 @@ function loadContent() {
       runtimeListener = fn;
     }),
     document: {},
+    // The isolated world always has one; request ids come from it.
+    crypto: globalThis.crypto,
     setTimeout: (fn: () => void) => timers.push({ fn }) - 1,
     clearTimeout: (id: number) => {
       const timer = timers[id];

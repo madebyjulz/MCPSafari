@@ -1,9 +1,9 @@
 // The tab `select_tab` pinned, and how a call that names no tab finds its target.
 
-import { Context, Effect, Layer, Predicate, Ref } from "effect";
+import { Context, Effect, Layer, Predicate, Ref, Result } from "effect";
 import { Browser, callBrowser } from "./Browser.ts";
 import { BackgroundTiming } from "./config.ts";
-import { extensionError, permissionRequired, type ToolError } from "./errors.ts";
+import { extensionError, permissionRequired, tabClosed, type ToolError } from "./errors.ts";
 
 export class SelectedTab extends Context.Service<
   SelectedTab,
@@ -12,8 +12,9 @@ export class SelectedTab extends Context.Service<
     /** Pins a tab, or clears the pin with `null`, and remembers it for this Safari session. */
     set(tabId: number | null): Effect.Effect<void>;
     /**
-     * The tab a call that names none acts on: the pinned one while it exists,
-     * else the active tab of the current window.
+     * The tab a call that names none acts on: the pinned one, else the active
+     * tab of the current window. A pinned tab that has closed is `tab_closed`,
+     * never a quiet switch to whatever the user is looking at.
      */
     readonly activeTabId: Effect.Effect<number, ToolError>;
     /** Restores the pin from session storage, if its tab still exists. */
@@ -42,6 +43,17 @@ export class SelectedTab extends Context.Service<
 
       const set = (tabId: number | null) => Effect.andThen(Ref.set(selected, tabId), persist(tabId));
 
+      // `tabs.get` rejects with a message that differs between browsers and says
+      // nothing a caller could branch on, so absence is confirmed against the
+      // list. Anything short of a clean "not in the list" counts as not gone:
+      // losing a pin over a listing that itself failed is the bug this prevents.
+      const tabIsGone = (tabId: number) =>
+        callBrowser((api) => api.tabs.query({})).pipe(
+          Effect.timeout(timing.tabListing),
+          Effect.map((tabs) => !tabs.some((tab) => tab.id === tabId)),
+          Effect.orElseSucceed(() => false),
+        );
+
       // Every call that names no tab resolves its target here, so an unbounded wait
       // on either line below puts the whole tool surface back on the 30-second bridge
       // timeout that `tabs_query` is deadlined to avoid. Neither call can be
@@ -51,20 +63,32 @@ export class SelectedTab extends Context.Service<
 
         // Use pinned tab if set via select_tab
         if (pinned !== null) {
-          const tab = yield* callBrowser((api) => api.tabs.get(pinned)).pipe(
-            Effect.map((found) => found.id ?? null),
-            // Tab was closed, clear selection
-            Effect.catchTag("ToolError", () => Effect.as(set(null), null)),
-            // A tab parked on Safari's dialog is not a closed one. Falling
-            // through here would drop the caller's pinned tab over a question
-            // the user has not answered yet.
+          const lookup = yield* callBrowser((api) => api.tabs.get(pinned)).pipe(
+            Effect.result,
+            // A tab parked on Safari's dialog is not a closed one. Treating it
+            // as one would drop the caller's pinned tab over a question the
+            // user has not answered yet.
             Effect.timeoutOrElse({
               duration: timing.tabListing,
               orElse: () => Effect.fail(permissionRequired(null, true)),
             }),
           );
 
-          if (tab !== null) return tab;
+          if (Result.isSuccess(lookup)) {
+            if (lookup.success.id !== undefined) return lookup.success.id;
+          } else {
+            // Falling through to the user's active tab here sent the next
+            // untabbed `type_text` or `click` to whatever they happened to be
+            // looking at. A pinned tab that is gone is an error the caller has
+            // to hear about; one that failed for any other reason keeps its pin.
+            if (yield* tabIsGone(pinned)) {
+              yield* set(null);
+
+              return yield* tabClosed(pinned);
+            }
+
+            return yield* lookup.failure;
+          }
         }
 
         const tabs = yield* callBrowser((api) => api.tabs.query({ active: true, currentWindow: true })).pipe(

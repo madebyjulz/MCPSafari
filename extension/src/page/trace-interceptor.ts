@@ -6,6 +6,7 @@
  * observe the same JavaScript objects as page code.
  */
 
+import { isSensitiveField } from "../shared/sensitive-field.ts";
 import { errorText, onContentMessage, postReply } from "./channel.ts";
 import type { TraceDetail, TraceEvent, TraceParams, TraceStop, TraceValue } from "./window.ts";
 
@@ -24,9 +25,67 @@ type MutationDetail = {
   attribute?: string | null;
   oldValue?: string;
   value?: TraceValue;
+  valueOmitted?: true;
+  truncated?: true;
   added?: number;
   removed?: number;
 };
+
+/** What an attribute mutation records about the values: both of them, or that they were withheld. */
+type AttributeValues = Pick<MutationDetail, "oldValue" | "value" | "valueOmitted" | "truncated">;
+
+// Long enough for a class list or an inline style, short enough that one
+// mutation cannot carry a page's worth of data into the trace.
+const MAX_ATTRIBUTE_VALUE = 512;
+
+// Frameworks mirror what a user types into the `value` attribute, so recording
+// old and new values of every attribute change wrote a typed password into the
+// trace.
+const ALWAYS_OMITTED_ATTRIBUTES: ReadonlySet<string> = new Set(["value", "checked"]);
+
+// The snapshot's rule for which fields hold secrets. Unlike the snapshot there
+// is no remembering that a field was once a password: a trace is a short
+// window and, whatever the field's type is by then, its `value` and `checked`
+// are never recorded.
+function isSensitiveElement(element: Element): boolean {
+  return isSensitiveField({
+    tag: element.tagName.toLowerCase(),
+    type: element.getAttribute("type"),
+    autocomplete: element.getAttribute("autocomplete"),
+    hints: [
+      element.getAttribute("name"),
+      element.id,
+      element.getAttribute("aria-label"),
+      element.getAttribute("inputmode"),
+      element.getAttribute("autocomplete"),
+    ],
+  });
+}
+
+function attributeValues(target: Element, attribute: string, oldValue: string | null): AttributeValues {
+  // Said rather than silently absent, so a trace reader can tell "the value
+  // was withheld" from "nothing changed".
+  if (ALWAYS_OMITTED_ATTRIBUTES.has(attribute.toLowerCase()) || isSensitiveElement(target)) {
+    return { valueOmitted: true };
+  }
+
+  const values: AttributeValues = {};
+
+  const bounded = (value: string): string => {
+    if (value.length <= MAX_ATTRIBUTE_VALUE) return value;
+
+    values.truncated = true;
+
+    return value.slice(0, MAX_ATTRIBUTE_VALUE);
+  };
+
+  if (oldValue !== null) values.oldValue = bounded(oldValue);
+
+  const value = target.getAttribute(attribute);
+  values.value = value === null ? null : bounded(value);
+
+  return values;
+}
 
 function installTraceInterceptor(): void {
   const MAX_EVENTS = 1000;
@@ -173,10 +232,11 @@ function installTraceInterceptor(): void {
 
         if (mutation.type === "attributes") {
           detail.attribute = mutation.attributeName;
-
-          if (mutation.oldValue !== null) detail.oldValue = mutation.oldValue;
           // SAFETY: an "attributes" record always targets an Element and names the attribute.
-          detail.value = (mutation.target as Element).getAttribute(mutation.attributeName as string);
+          Object.assign(
+            detail,
+            attributeValues(mutation.target as Element, mutation.attributeName as string, mutation.oldValue),
+          );
         } else if (mutation.type === "childList") {
           detail.added = mutation.addedNodes.length;
           detail.removed = mutation.removedNodes.length;

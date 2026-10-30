@@ -49,7 +49,14 @@ import {
   type HandleDialogParams,
   type WaitParams,
 } from "./io.ts";
-import { getPageText, readPage, takeSnapshot, type ReadPageParams, type SnapshotParams } from "./snapshot.ts";
+import {
+  getPageText,
+  readPage,
+  takeSnapshot,
+  watchForPasswordFields,
+  type ReadPageParams,
+  type SnapshotParams,
+} from "./snapshot.ts";
 import { findElements, type FindParams, type TargetParams } from "./target.ts";
 
 declare global {
@@ -88,6 +95,10 @@ if (!window.__mcpSafari) {
   // message is whatever a sender posted and is checked before use below.
   browser.runtime.onMessage.addListener(onMessage as Runtime.OnMessageListener);
   window.__mcpSafari = true;
+  // From load rather than from the first snapshot, so a show-password toggle
+  // the user flips before then is still seen. After the marker, since it is
+  // not what makes the frame answer.
+  watchForPasswordFields(document);
 }
 
 // ─── Message Handler ─────────────────────────────────────────────

@@ -4,7 +4,15 @@
  */
 
 import type { ContentParams } from "../shared/protocol.ts";
-import { asPageElement, firesKeypress, pointerEvent, toolError, type PageElement, type ThrownError } from "./core.ts";
+import {
+  asPageElement,
+  assertPageFocused,
+  firesKeypress,
+  pointerEvent,
+  toolError,
+  type PageElement,
+  type ThrownError,
+} from "./core.ts";
 import { deepQueryFirst } from "./snapshot.ts";
 import { assertReachable, resolveElement, scrollToTarget, type TargetParams } from "./target.ts";
 
@@ -332,6 +340,10 @@ export function prepareNativeInput(params: TargetParams): string {
   if (document.activeElement !== el && !el.contains(document.activeElement)) {
     throw toolError("native_input_focus_failed", `Could not focus <${tag}> for native typing`, true, "retry");
   }
+
+  // After the check above, which only says which element the page thinks is
+  // active: with the address bar focused that stays true.
+  assertPageFocused(`native typing into <${tag}>`);
 
   return `Focused <${tag}> for native typing`;
 }

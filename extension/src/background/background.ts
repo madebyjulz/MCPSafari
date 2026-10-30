@@ -84,11 +84,19 @@ export const registerListeners = (api: BrowserApi.Browser, runtime: BackgroundRu
 export const startup = Effect.gen(function* () {
   const connections = yield* Connections;
   const selectedTab = yield* SelectedTab;
+  const tabAccess = yield* TabAccess;
 
-  yield* Effect.all([connections.loadAuthTokens, Effect.andThen(selectedTab.restore, connections.restore)], {
-    concurrency: "unbounded",
-    discard: true,
-  });
+  // Sites found reachable on an earlier run, among the rest. Without them every
+  // restart, and every suspension of the background page, would describe each
+  // tab as not granted until a call had touched its site again.
+  yield* Effect.all(
+    [
+      connections.loadAuthTokens,
+      Effect.andThen(selectedTab.restore, connections.restore),
+      tabAccess.restoreGrantedOrigins,
+    ],
+    { concurrency: "unbounded", discard: true },
+  );
   yield* connections.connectAll;
   yield* Effect.log("[MCPSafari] Background script initialized");
 });

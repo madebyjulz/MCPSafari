@@ -75,7 +75,8 @@ function makeContext({ failFirstRegistration = false } = {}) {
       },
     },
     console: { error() {}, log() {}, warn() {} },
-    document: { body, documentElement: body, activeElement: null },
+    // querySelectorAll is how a snapshot finds the shadow roots it watches.
+    document: { body, documentElement: body, activeElement: null, querySelectorAll: () => [] },
     Node: { ELEMENT_NODE: 1, TEXT_NODE: 3 },
     NodeFilter: { SHOW_ELEMENT: 1, FILTER_ACCEPT: 1, FILTER_SKIP: 3 },
     WeakRef,

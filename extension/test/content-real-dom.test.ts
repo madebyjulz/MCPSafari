@@ -4,40 +4,10 @@
 // implements those parts of the DOM for real.
 
 import assert from "node:assert/strict";
-import { Window } from "happy-dom";
 import { test } from "vitest";
 
 import type { ContentParams } from "../src/shared/protocol.ts";
-import {
-  browserStub,
-  callThrough,
-  contentSource,
-  type CallContent,
-  type ContentReply,
-  type RuntimeListener,
-} from "./helpers/content.ts";
-
-const source = contentSource();
-
-interface Page {
-  readonly window: Window;
-  readonly document: Window["document"];
-  readonly call: CallContent;
-}
-
-/** A fresh window with `markup` as its body and the content script loaded into it. */
-function loadPage(markup: string): Page {
-  const window = new Window({ url: "https://example.com/app/" });
-  let listener: RuntimeListener | undefined;
-
-  // The content script reads `browser` as a global, and the window is the
-  // global object of the context it runs in.
-  Object.assign(window, { browser: browserStub((fn) => (listener = fn)) });
-  window.document.body.innerHTML = markup;
-  window.eval(source);
-
-  return { window, document: window.document, call: callThrough(() => listener) };
-}
+import { loadPage, type ContentReply, type Page } from "./helpers/content.ts";
 
 /** A snapshot node as these tests read it. */
 interface TreeNode {
@@ -300,22 +270,40 @@ test("press_key treats a trailing + as the key", async () => {
 test("prepare_native_key focuses the page without leaving a tabindex behind", async () => {
   const page = loadPage(``);
   const { body } = page.document;
-  page.document.hasFocus = () => false;
+  // Focusing the body is what brings the page focus back.
+  let pageFocused = false;
+  page.document.hasFocus = () => pageFocused;
   // The attribute has to be there while focus() runs, or <body> cannot take focus.
   const tabindexAtFocus: Array<string | null> = [];
   const focus = body.focus.bind(body);
   body.focus = () => {
     tabindexAtFocus.push(body.getAttribute("tabindex"));
     focus();
+    pageFocused = true;
   };
 
   assert.equal((await page.call("prepare_native_key", {})).error, null);
   assert.equal(body.getAttribute("tabindex"), null);
 
+  pageFocused = false;
   body.setAttribute("tabindex", "0");
   assert.equal((await page.call("prepare_native_key", {})).error, null);
   assert.equal(body.getAttribute("tabindex"), "0", "a page's own tabindex is put back");
   assert.deepEqual(tabindexAtFocus, ["-1", "-1"]);
+});
+
+test("prepare_native_key says so when the page could not take focus", async () => {
+  const page = loadPage(``);
+  // The address bar keeps the keyboard however the body is focused.
+  page.document.hasFocus = () => false;
+
+  const response = await page.call("prepare_native_key", {});
+
+  assert.equal(response.data, null);
+  assert.equal(response.errorCode, "native_input_focus_failed");
+  assert.equal(response.retryable, true);
+  assert.equal(response.recoveryAction, "retry");
+  assert.match(response.error ?? "", /native key events/);
 });
 
 // ─── handle_dialog ───────────────────────────────────────────────────
@@ -325,7 +313,7 @@ test("handle_dialog says when interception is armed for the next dialog", async 
   const { window } = page;
   // The content script compares a reply's source with its own global, which in
   // a vm context is not the sandbox object itself.
-  const global: Window = window.eval("window");
+  const global: Page["window"] = window.eval("window");
 
   // The page world answers the way dialog-interceptor.js does when nothing
   // was captured yet: it arms the wrappers and says for how long.

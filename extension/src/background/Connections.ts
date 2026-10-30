@@ -1,19 +1,20 @@
 // The WebSocket clients: one per server port, each authenticating, answering
 // bridge requests, and reconnecting when its server goes away.
 //
-// All ports in the scan range (8089-8098) are initialised at startup. The
-// extension tries to connect to each: servers that exist get connected, absent
-// ports stay disconnected and are cleaned up after `autoCleanup`. Manually
-// added ports are persisted in storage.local across restarts.
+// Ports are discovered from the token files the servers write, one per port they
+// bound, so there is no range to scan and none to keep in step with the server's
+// `--port-range`. A port that has a token gets a connection; one whose token is
+// gone loses it, and one that never answers is given up on after
+// `autoGiveUpAttempts` or `autoCleanup`. Manually added ports are persisted in
+// storage.local across restarts.
 
 import { Clock, Context, Duration, Effect, FiberSet, Layer, Option, Predicate, Schema } from "effect";
 import { Browser, callBrowser } from "./Browser.ts";
 import {
-  AUTO_SCAN_RANGE,
   BackgroundTiming,
   BRIDGE_PROTOCOL_VERSION,
-  DEFAULT_PORT,
   DEFAULT_PROFILE_ID,
+  MAX_DISCOVERED_PORTS,
   MAX_PORT,
   MIN_PORT,
   NATIVE_HOST_ID,
@@ -53,25 +54,108 @@ export const WebSocketConstructor = Context.Reference<typeof WebSocket>("mcpsafa
 const NativeTokens = Schema.Struct({
   profile: Schema.optionalKey(Schema.String),
   tokens: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
-  token: Schema.optionalKey(Schema.String),
   error: Schema.optionalKey(Schema.String),
 });
 
-/** The server's first frame on a new socket. */
-const HandshakeReply = Schema.fromJsonString(
+/**
+ * A server frame before the socket is ready. Every field is read loosely: what
+ * an unauthenticated peer sends is judged here, field by field, and anything out
+ * of shape closes the socket rather than failing to decode somewhere else.
+ */
+const HandshakeFrame = Schema.fromJsonString(
   Schema.Struct({
-    auth: Schema.optionalKey(Schema.String),
-    protocolVersion: Schema.optionalKey(Schema.Finite),
-    error: Schema.optionalKey(Schema.String),
+    auth: Schema.optionalKey(Schema.Unknown),
+    error: Schema.optionalKey(Schema.Unknown),
+    protocolVersion: Schema.optionalKey(Schema.Unknown),
+    serverProtocolVersion: Schema.optionalKey(Schema.Unknown),
+    challenge: Schema.optionalKey(Schema.Unknown),
   }),
 );
+
+const decodeHandshakeFrame = Schema.decodeUnknownOption(HandshakeFrame);
+
+/** The server's answer to the hello: its nonce, and its proof that it holds the token. */
+const Challenge = Schema.Struct({ serverNonce: Schema.String, serverProof: Schema.String });
+
+const isChallenge = Schema.is(Challenge);
 
 /** Any later frame: a request, which is only answerable if it carries an id. */
 const IncomingRequest = Schema.fromJsonString(BridgeRequest);
 
 const isUserPort = (port: number) => port >= MIN_PORT && port <= MAX_PORT;
 
-export const isAutoScanPort = (port: number) => port >= DEFAULT_PORT && port < DEFAULT_PORT + AUTO_SCAN_RANGE;
+// ─── Handshake primitives ────────────────────────────────────────────
+//
+// The token proves itself without being sent. Each side returns an HMAC of both
+// sides' fresh nonces under it, and the extension checks the server's proof
+// before it sends its own, so a listener that merely accepted the connection gets
+// nothing it could replay, and this socket acts on none of its frames. The two
+// proofs carry different labels and take the nonces in different orders, so
+// neither can be turned around and offered as the other. `BridgeHandshake.swift`
+// is the other half.
+
+const base64UrlEncode = (bytes: Uint8Array): string => {
+  let binary = "";
+
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+};
+
+/** The bytes of unpadded base64url text, or null for anything else. */
+const base64UrlDecode = (text: string): Uint8Array<ArrayBuffer> | null => {
+  if (!/^[A-Za-z0-9_-]*$/.test(text) || text.length % 4 === 1) return null;
+
+  const padded = text.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (text.length % 4)) % 4);
+
+  return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
+};
+
+/** 32 random bytes, which is always 43 characters of base64url. */
+const randomNonce = () => base64UrlEncode(crypto.getRandomValues(new Uint8Array(32)));
+
+const isWellFormedNonce = (nonce: string) => nonce.length === 43 && base64UrlDecode(nonce)?.length === 32;
+
+/** What each side authenticates. */
+const handshakeMessage = (role: "server" | "client", port: number, first: string, second: string) =>
+  new TextEncoder().encode(`mcpsafari-v${BRIDGE_PROTOCOL_VERSION}-${role}|${port}|${first}|${second}`);
+
+/**
+ * Checks the server's proof and, only if it holds, makes this side's. Null when
+ * the server did not prove it knows the token.
+ */
+const proveHandshake = (token: string, port: number, clientNonce: string, serverNonce: string, serverProof: string) =>
+  Effect.tryPromise({
+    try: async () => {
+      const key = await crypto.subtle.importKey(
+        "raw",
+        new TextEncoder().encode(token),
+        { name: "HMAC", hash: "SHA-256" },
+        false,
+        ["sign", "verify"],
+      );
+
+      const proof = base64UrlDecode(serverProof);
+
+      const genuine =
+        proof !== null &&
+        (await crypto.subtle.verify("HMAC", key, proof, handshakeMessage("server", port, clientNonce, serverNonce)));
+
+      if (!genuine) return null;
+
+      const clientProof = await crypto.subtle.sign(
+        "HMAC",
+        key,
+        handshakeMessage("client", port, serverNonce, clientNonce),
+      );
+
+      return base64UrlEncode(new Uint8Array(clientProof));
+    },
+    catch: fromUnknown,
+  });
+
+/** Where a socket is in the handshake. Nothing is dispatched as a request until `ready`. */
+type HandshakeStage = "awaitingChallenge" | "verifying" | "awaitingOk" | "ready" | "refused";
 
 export class Connections extends Context.Service<
   Connections,
@@ -89,11 +173,14 @@ export class Connections extends Context.Service<
     /** Stops tracking a manually added port. */
     removeManualPort(port: number): Effect.Effect<void>;
     readonly statuses: Effect.Effect<ReadonlyArray<PortStatus>>;
-    /** Asks the appex for the current tokens and profile, and connects any newly known port. */
+    /**
+     * Asks the appex for the current tokens and profile, connects any newly
+     * known port, and drops discovered ports whose token is gone.
+     */
     readonly loadAuthTokens: Effect.Effect<void>;
-    /** Restores manual ports from storage and starts tracking the auto-scan range. */
+    /** Restores manual ports from storage. Every other port comes from a token. */
     readonly restore: Effect.Effect<void>;
-    /** The keepalive: reload tokens, reconnect, and drop auto ports that are gone. */
+    /** The keepalive: reload tokens, reconnect, and drop discovered ports that are gone. */
     readonly keepalive: Effect.Effect<void>;
     /** For tests: the tracked state, read-only. */
     readonly inspect: Effect.Effect<{
@@ -119,7 +206,6 @@ export class Connections extends Context.Service<
       const manualPorts = new Set<number>();
       const authTokensByPort = new Map<number, string>();
       const staleTokensByPort = new Map<number, string>();
-      let legacyAuthToken: string | null = null;
       // Safari runs a separate instance of this extension per profile, each with its own
       // background page reading the same tokens. Without an identity in the handshake every
       // instance looks like the same client, and the server evicts whichever one connected
@@ -171,7 +257,19 @@ export class Connections extends Context.Service<
         connections.delete(port);
       };
 
-      const scheduleReconnect = (port: number) => {
+      // `reloadTokens` is for a dial that never got authenticated. A server that
+      // restarted writes a new token, and the one cached here is for the old run,
+      // so redialling with it only locks the extension out until the next
+      // keepalive (#156). It is one native read per attempt, and attempts are
+      // already spaced by the backoff below, so a server that keeps refusing
+      // cannot make this a tight loop.
+      const disconnectPortSync = (port: number) => {
+        closeSocket(connections.get(port));
+        connections.delete(port);
+        staleTokensByPort.delete(port);
+      };
+
+      const scheduleReconnect = (port: number, reloadTokens: boolean) => {
         const conn = connections.get(port);
 
         if (!conn) return;
@@ -189,9 +287,9 @@ export class Connections extends Context.Service<
 
         conn.attempts++;
         run(
-          Effect.andThen(
-            Effect.sleep(Duration.millis(delay)),
-            Effect.sync(() => connectToPort(port)),
+          Effect.sleep(Duration.millis(delay)).pipe(
+            Effect.andThen(reloadTokens ? loadAuthTokens : Effect.void),
+            Effect.andThen(Effect.sync(() => connectToPort(port))),
           ),
         );
       };
@@ -221,39 +319,6 @@ export class Connections extends Context.Service<
           );
         });
 
-      const handshake = (socket: WebSocket, conn: Connection, port: number, data: string) =>
-        Effect.gen(function* () {
-          const reply = yield* Schema.decodeEffect(HandshakeReply)(data).pipe(Effect.option);
-
-          if (Option.isNone(reply)) {
-            yield* Effect.logError(`[MCPSafari:${port}] Invalid auth response`);
-
-            return socket.close();
-          }
-
-          const message = reply.value;
-
-          if (message.auth !== "ok") {
-            yield* Effect.logError(`[MCPSafari:${port}] Auth rejected: ${message.error || "unknown error"}`);
-
-            return socket.close();
-          }
-
-          if (message.protocolVersion !== undefined && message.protocolVersion !== BRIDGE_PROTOCOL_VERSION) {
-            yield* Effect.logError(
-              `[MCPSafari:${port}] Protocol mismatch: extension=${BRIDGE_PROTOCOL_VERSION}, server=${message.protocolVersion}`,
-            );
-
-            return socket.close();
-          }
-
-          conn.lastConnected = now();
-          conn.state = "connected";
-          conn.attempts = 0;
-          conn.disconnectedAt = 0;
-          yield* Effect.log(`[MCPSafari:${port}] Authenticated`);
-        });
-
       function connectToPort(port: number): void {
         const conn = connections.get(port);
 
@@ -262,7 +327,7 @@ export class Connections extends Context.Service<
         if (conn.ws && (conn.ws.readyState === SocketImpl.OPEN || conn.ws.readyState === SocketImpl.CONNECTING)) return;
 
         // Security: every server instance requires its per-port auth token.
-        const authToken = authTokensByPort.get(port) || legacyAuthToken;
+        const authToken = authTokensByPort.get(port);
 
         if (!authToken) {
           conn.state = "disconnected";
@@ -272,31 +337,120 @@ export class Connections extends Context.Service<
 
         conn.state = "connecting";
 
-        const socket = new SocketImpl(`ws://localhost:${port}`);
+        // The literal address the server binds, not the name `localhost`. The
+        // name can resolve to ::1 first, where another local user could be
+        // listening and would receive the handshake.
+        const socket = new SocketImpl(`ws://127.0.0.1:${port}`);
 
         conn.ws = socket;
 
-        let pendingAuth = true;
+        //   awaitingChallenge -> verifying -> awaitingOk -> ready
+        let stage: HandshakeStage = "awaitingChallenge";
+        let clientNonce = "";
+        // Whether the server ever accepted this socket. A close before that means
+        // the token this dial used may be out of date, which the reconnect acts on.
+        let authenticated = false;
 
-        socket.onopen = () => {
-          socket.send(
-            JSON.stringify({
-              auth: authToken,
-              extensionVersion: browserApi.runtime.getManifest().version,
-              protocolVersion: BRIDGE_PROTOCOL_VERSION,
-              profileId,
-            }),
-          );
-          run(Effect.log(`[MCPSafari:${port}] Sent auth token`));
+        // Closing here, not just ignoring the frame: a peer that sent something
+        // out of turn is not one to keep talking to.
+        const refuse = (reason: string) => {
+          stage = "refused";
+          run(Effect.logError(`[MCPSafari:${port}] ${reason}`));
+          socket.close();
         };
 
-        socket.onmessage = (event: MessageEvent<string>) => {
-          if (pendingAuth) {
-            pendingAuth = false;
-            run(handshake(socket, conn, port, event.data));
+        const answerChallenge = (serverNonce: string, serverProof: string) =>
+          proveHandshake(authToken, port, clientNonce, serverNonce, serverProof).pipe(
+            Effect.match({
+              onFailure: (error) => refuse(`Handshake failed: ${error.message}`),
+              onSuccess: (clientProof) => {
+                if (clientProof === null) {
+                  return refuse("The server did not prove it knows the token; not authenticating");
+                }
+
+                // Refused or closed while the proofs were being computed.
+                if (stage !== "verifying" || socket.readyState !== SocketImpl.OPEN) return;
+
+                stage = "awaitingOk";
+                socket.send(JSON.stringify({ auth: { clientProof } }));
+              },
+            }),
+          );
+
+        // Judged synchronously as each frame arrives, so a second frame landing
+        // while the first is being verified finds a stage that accepts nothing.
+        const continueHandshake = (data: string) => {
+          const frame = decodeHandshakeFrame(data);
+
+          if (Option.isNone(frame)) return refuse("Invalid handshake frame");
+
+          const message = frame.value;
+
+          if (message.auth === "error") {
+            if (message.error === "protocol_version_mismatch") {
+              return refuse(
+                `Protocol mismatch: extension=${BRIDGE_PROTOCOL_VERSION}, server=${JSON.stringify(message.serverProtocolVersion)}. ` +
+                  "Install matching MCPSafari app and mcp-safari server versions.",
+              );
+            }
+
+            return refuse(`Auth rejected: ${Predicate.isString(message.error) ? message.error : "unknown error"}`);
+          }
+
+          if (stage === "awaitingChallenge") {
+            const challenge = message.challenge;
+
+            if (!isChallenge(challenge) || !isWellFormedNonce(challenge.serverNonce)) {
+              return refuse("Expected a challenge from the server");
+            }
+
+            stage = "verifying";
+            run(answerChallenge(challenge.serverNonce, challenge.serverProof));
 
             return;
           }
+
+          if (stage === "awaitingOk" && message.auth === "ok") {
+            if (message.protocolVersion !== undefined && message.protocolVersion !== BRIDGE_PROTOCOL_VERSION) {
+              return refuse(
+                `Protocol mismatch: extension=${BRIDGE_PROTOCOL_VERSION}, server=${JSON.stringify(message.protocolVersion)}`,
+              );
+            }
+
+            stage = "ready";
+            authenticated = true;
+            conn.lastConnected = now();
+            conn.state = "connected";
+            conn.attempts = 0;
+            conn.disconnectedAt = 0;
+            run(Effect.log(`[MCPSafari:${port}] Authenticated`));
+
+            return;
+          }
+
+          refuse("Unexpected frame during the handshake");
+        };
+
+        socket.onopen = () => {
+          clientNonce = randomNonce();
+          // No token in this frame, or in any other this socket sends. It is the
+          // key to the two proofs, and a listener that is not the real server
+          // must not be handed it just for being dialled.
+          socket.send(
+            JSON.stringify({
+              hello: {
+                clientNonce,
+                extensionVersion: browserApi.runtime.getManifest().version,
+                protocolVersion: BRIDGE_PROTOCOL_VERSION,
+                profileId,
+              },
+            }),
+          );
+          run(Effect.log(`[MCPSafari:${port}] Sent hello`));
+        };
+
+        socket.onmessage = (event: MessageEvent<string>) => {
+          if (stage !== "ready") return continueHandshake(event.data);
 
           run(answer(socket, port, event.data));
         };
@@ -306,7 +460,7 @@ export class Connections extends Context.Service<
           conn.ws = null;
 
           if (conn.disconnectedAt === 0) conn.disconnectedAt = now();
-          scheduleReconnect(port);
+          scheduleReconnect(port, !authenticated);
         };
 
         socket.onerror = () => {
@@ -324,49 +478,94 @@ export class Connections extends Context.Service<
         }
       };
 
-      const ensurePortsForKnownTokens = () => {
-        for (const [port, token] of authTokensByPort) {
+      /** How many connections exist only because a token file named their port. */
+      const discoveredPortCount = () => {
+        let count = 0;
+
+        for (const conn of connections.values()) if (!conn.manual) count++;
+
+        return count;
+      };
+
+      // Every port with a token gets a connection, whichever port it is. A server
+      // writes a token for the port it actually bound, so this finds one that fell
+      // back past the default, one started on another `--port`, and one given a
+      // wider `--port-range`, with nothing here to set. Lowest port first so that,
+      // past the cap, which ports are left out does not change from one read to
+      // the next.
+      const ensurePortsForKnownTokens = Effect.gen(function* () {
+        let skipped = 0;
+
+        for (const port of [...authTokensByPort.keys()].sort((a, b) => a - b)) {
+          const token = authTokensByPort.get(port);
+
           if (staleTokensByPort.get(port) === token) continue;
 
           staleTokensByPort.delete(port);
 
-          if ((isAutoScanPort(port) || manualPorts.has(port)) && !connections.has(port)) {
-            ensurePortSync(port, manualPorts.has(port));
-            connectToPort(port);
+          if (connections.has(port)) continue;
+
+          const manual = manualPorts.has(port);
+
+          if (!manual && discoveredPortCount() >= MAX_DISCOVERED_PORTS) {
+            skipped++;
+            continue;
           }
+
+          ensurePortSync(port, manual);
+          connectToPort(port);
+        }
+
+        if (skipped > 0) {
+          yield* Effect.logWarning(
+            `[MCPSafari] ${skipped} token file(s) left unused: the limit is ${MAX_DISCOVERED_PORTS} discovered ports`,
+          );
+        }
+      });
+
+      // A server removes its token file when it stops, so a port without one has
+      // nothing left to dial. Ports added by hand stay. So does a socket that is
+      // still authenticated: it needs no token to keep working, and it is pruned
+      // on the next read once its server closes it.
+      const pruneRemovedTokenPorts = () => {
+        for (const [port, conn] of connections) {
+          if (conn.manual || conn.state === "connected" || authTokensByPort.has(port)) continue;
+
+          disconnectPortSync(port);
         }
       };
 
-      const loadAuthTokens = Effect.gen(function* () {
+      const loadAuthTokens: Effect.Effect<void> = Effect.gen(function* () {
         const response = yield* callBrowser((api) =>
           api.runtime.sendNativeMessage(NATIVE_HOST_ID, { type: "getTokens" }),
         ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(NativeTokens)), Effect.mapError(fromUnknown));
 
         if (response.profile) profileId = response.profile;
 
-        if (response.tokens) {
-          authTokensByPort.clear();
-          legacyAuthToken = null;
+        // The handler answers `no_token_files` when the directory holds no valid
+        // token, which is every server having stopped. That is an answer, not a
+        // failure: ignoring it left the last servers' ports in the map for good.
+        const tokens = response.tokens ?? (response.error === "no_token_files" ? {} : null);
 
-          for (const [port, token] of Object.entries(response.tokens)) {
-            const parsedPort = parseInt(port, 10);
-
-            if (isUserPort(parsedPort) && token) authTokensByPort.set(parsedPort, token);
-          }
-
-          for (const port of staleTokensByPort.keys()) {
-            if (!authTokensByPort.has(port)) staleTokensByPort.delete(port);
-          }
-
-          ensurePortsForKnownTokens();
-          yield* Effect.log(`[MCPSafari] Loaded ${authTokensByPort.size} auth token(s)`);
-        } else if (response.token) {
-          authTokensByPort.clear();
-          legacyAuthToken = response.token;
-          yield* Effect.log("[MCPSafari] Legacy auth token loaded");
-        } else {
-          yield* Effect.logWarning("[MCPSafari] Failed to load auth tokens:", response.error || "unknown");
+        if (!tokens) {
+          return yield* Effect.logWarning("[MCPSafari] Failed to load auth tokens:", response.error || "unknown");
         }
+
+        authTokensByPort.clear();
+
+        for (const [port, token] of Object.entries(tokens)) {
+          const parsedPort = parseInt(port, 10);
+
+          if (isUserPort(parsedPort) && token) authTokensByPort.set(parsedPort, token);
+        }
+
+        for (const port of staleTokensByPort.keys()) {
+          if (!authTokensByPort.has(port)) staleTokensByPort.delete(port);
+        }
+
+        pruneRemovedTokenPorts();
+        yield* ensurePortsForKnownTokens;
+        yield* Effect.log(`[MCPSafari] Loaded ${authTokensByPort.size} auth token(s)`);
       }).pipe(
         Effect.catch((error) =>
           Effect.logWarning("[MCPSafari] Native messaging unavailable for tokens:", error.message),
@@ -386,29 +585,21 @@ export class Connections extends Context.Service<
             }
           }
         }
-      }).pipe(
-        Effect.ignore,
-        // Initialize all ports in the auto-scan range. connectAll will attempt
-        // each: servers that exist get connected, absent ports fail silently and
-        // are cleaned up by the keepalive.
-        Effect.andThen(
-          Effect.sync(() => {
-            for (let offset = 0; offset < AUTO_SCAN_RANGE; offset++) ensurePortSync(DEFAULT_PORT + offset);
-          }),
-        ),
-        Effect.provideService(Browser, browserApi),
-      );
+        // No ports are created here beyond the ones added by hand. The others
+        // come from `ensurePortsForKnownTokens`, one for each token a server has
+        // written.
+      }).pipe(Effect.ignore, Effect.provideService(Browser, browserApi));
 
       const keepalive = Effect.gen(function* () {
         yield* loadAuthTokens;
         reconnectKnownPortsSync();
 
-        // Clean up auto-scan ports that have never connected or have been
+        // Clean up discovered ports that have never connected or have been
         // disconnected for longer than `autoCleanup`.
         const at = now();
 
         for (const [port, conn] of connections) {
-          if (conn.manual || !isAutoScanPort(port) || conn.state === "connected") continue;
+          if (conn.manual || conn.state === "connected") continue;
 
           if (conn.lastConnected === 0 && conn.attempts >= timing.autoGiveUpAttempts) {
             // Never connected — remove after a few failed attempts
@@ -433,12 +624,11 @@ export class Connections extends Context.Service<
           // Only surface connections worth showing:
           // - Currently connected or attempting an authenticated connection
           // - Manually added by the user
-          // - Auto-scan ports with a known token or previous connection
+          // - Discovered through a token that is still there. One whose token is
+          //   gone is a server that stopped, and showing it would only be a row
+          //   that cannot be reconnected.
           const isVisible =
-            conn.state === "connected" ||
-            conn.state === "connecting" ||
-            conn.manual ||
-            (isAutoScanPort(port) && (authTokensByPort.has(port) || conn.lastConnected > 0));
+            conn.state === "connected" || conn.state === "connecting" || conn.manual || authTokensByPort.has(port);
 
           if (isVisible) ports.push({ port, state: conn.state, manual: conn.manual });
         }
@@ -458,12 +648,7 @@ export class Connections extends Context.Service<
           for (const port of connections.keys()) connectToPort(port);
         }),
         reconnectKnownPorts: Effect.sync(reconnectKnownPortsSync),
-        disconnectPort: (port) =>
-          Effect.sync(() => {
-            closeSocket(connections.get(port));
-            connections.delete(port);
-            staleTokensByPort.delete(port);
-          }),
+        disconnectPort: (port) => Effect.sync(() => disconnectPortSync(port)),
         reconnectPort: (port) =>
           Effect.sync(() => {
             staleTokensByPort.delete(port);

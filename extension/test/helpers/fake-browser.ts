@@ -106,10 +106,13 @@ export const fakeBrowser = () => ({
     executeScript: async (_options: InjectionOptions): Promise<ReadonlyArray<InjectionResult>> => [{ result: true }],
   },
   storage: {
-    local: { get: async (): Promise<Readonly<Record<string, JsonValue>>> => ({}), set: async (): Promise<void> => {} },
+    local: {
+      get: async (): Promise<Readonly<Record<string, JsonValue>>> => ({}),
+      set: async (_values: Readonly<Record<string, JsonValue>>): Promise<void> => {},
+    },
     session: {
       get: async (): Promise<Readonly<Record<string, JsonValue>>> => ({}),
-      set: async (): Promise<void> => {},
+      set: async (_values: Readonly<Record<string, JsonValue>>): Promise<void> => {},
       remove: async (): Promise<void> => {},
     },
   },
